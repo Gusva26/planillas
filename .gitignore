@@ -1,0 +1,12 @@
+.env
+.env.*
+!.env.example
+__pycache__/
+*.pyc
+.venv/
+node_modules/
+analysis/referencias/
+storage/
+backups/
+test-results/
+.pytest_cache/
