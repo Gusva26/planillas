@@ -1,8 +1,10 @@
 # Stage 1: Compilación de Frontend Moderno (React + Vite)
 FROM node:22-slim AS frontend-builder
 WORKDIR /build
-COPY frontend/package.json ./
-RUN npm install
+# El lock está versionado: `npm ci` instala exactamente ese árbol y falla si
+# `package.json` y `package-lock.json` se desincronizan.
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
 COPY frontend/ ./
 RUN npm run build
 
