@@ -80,11 +80,10 @@ flowchart LR
 | Capa | Puede importar | No puede |
 | --- | --- | --- |
 | `frontend/src` | `/api` por HTTP | reglas de negocio, SQL |
-| `cafae/api/routes_*` | `deps`, servicios, Pydantic | `cafae.db`, `psycopg`, Streamlit |
+| `cafae/api/routes_*` | `deps`, servicios, Pydantic | `cafae.db`, `psycopg` |
 | `cafae/api/deps.py` | `AuthService`, `security` | servicios de dominio |
-| `cafae/*.py` (servicios) | `cafae.db`, `security`, `calculos`, `documentos` | FastAPI, Streamlit |
+| `cafae/*.py` (servicios) | `cafae.db`, `security`, `calculos`, `documentos` | FastAPI |
 | `cafae/documentos/*` | `calculos`, tipos | `cafae.db` |
-| `cafae/ui/*` (legado) | servicios de dominio | routers, FastAPI |
 
 **Violación actual**: 17 sentencias SQL viven en routers (`routes_catalogos.py`
 13, `routes_planillas.py` 2, `routes_documentos.py` 2). Ver deuda D-03.
@@ -97,7 +96,7 @@ flowchart LR
 | Tablas | 35 | esquema `cafae` |
 | Migraciones | 8 | `001`–`008`, inmutables por SHA-256 |
 | Pruebas | 81 | `unittest`, 9 runners, base desechable `cafae_test_*` |
-| UIs | 2 | React (objetivo) + Streamlit (legado) |
+| UIs | 1 | React + Vite (ADR-005); Streamlit retirado el 28/10 |
 | Logging estructurado | 0 | sin `logging` en `cafae/`; 3 `print` |
 
 ### Desviaciones frente al diseño original
@@ -110,7 +109,7 @@ flowchart LR
 | `app/{domain,application,infrastructure}` | `cafae/` plano por dominio | ADR-001 |
 | Importadores PDF/DOCX/OCR | solo Excel | fuera de alcance |
 | Storage privado de archivos | documentos generados en memoria | por definir |
-| Una sola UI | React + Streamlit → solo React | ADR-005 |
+| Una sola UI | React + Streamlit → solo React | ADR-005 (ejecutado 28/10) |
 
 ### Deuda priorizada
 
@@ -144,12 +143,17 @@ detectado en la base responde `409 CONFLICTO_REVISION` en vez de `500`, y
 `POST /api/planillas` devuelve la `revision_edicion` vigente. Pruebas:
 `python scripts/test_api.py` (15 casos, sin base de datos).
 
+**Retiro de Streamlit 28/10/2026.** Se ejecutó el plan de ADR-005: se
+eliminaron `app.py`, `cafae/ui/` y `.streamlit/`, la dependencia `streamlit`
+salió de `requirements.txt` y `requirements.lock`, el `Dockerfile` dejó de
+copiar `app.py` y el healthcheck de `compose.yaml` apunta a `/api/health`.
+Los cuatro casos de UI basados en `AppTest` se retiraron de
+`tests/auth/test_auth.py`; la suite completa pasa sin `streamlit` instalado.
+
 ### Riesgos abiertos
 
 - **Capacidad desconocida**: sin pool ni métricas no se puede afirmar cuántos
   usuarios concurrentes soporta el sistema.
-- **Doble UI en retiro**: Streamlit sigue en el árbol hasta completar la matriz
-  de paridad; ADR-005 fija el plan y prohíbe replicar correcciones allí.
 - **Token en `localStorage`**: un XSS escala a robo de sesión completa.
 - **TXT bancario**: el formato ya está implementado y probado, pero D.5 lo
   mantiene bloqueado hasta la especificación oficial.

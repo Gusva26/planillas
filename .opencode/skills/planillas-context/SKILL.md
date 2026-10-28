@@ -1,6 +1,6 @@
 ---
 name: Planillas CAFAE — Contexto del Proyecto
-description: Arquitectura, comandos, migraciones, tests y reglas de negocio del sistema de planillas CAFAE (FastAPI + PostgreSQL 17 + React/Vite, con UI Streamlit legada). Úsala al empezar cualquier tarea de código en este repositorio para ubicar capas, ejecutar el proyecto o los tests y respetar las convenciones de migración y dominio.
+description: Arquitectura, comandos, migraciones, tests y reglas de negocio del sistema de planillas CAFAE (FastAPI + PostgreSQL 17 + React/Vite). Úsala al empezar cualquier tarea de código en este repositorio para ubicar capas, ejecutar el proyecto o los tests y respetar las convenciones de migración y dominio.
 ---
 
 # Planillas CAFAE · UGEL Chepén
@@ -23,8 +23,7 @@ No la uses para preguntas conceptuales ni para explicar teoría.
 | API REST | FastAPI + Uvicorn, montada en `/api`, puerto 8501 | `cafae/api/` |
 | Dominio | Python 3.12, sin ORM (SQL con `psycopg` + `transaction()`) | `cafae/*.py` |
 | DB | PostgreSQL 17 (contenedor `cafae-postgres-dev`, puerto host 55432) | `database/` |
-| Frontend | React 19 + TypeScript + Vite | `frontend/src/` |
-| UI legada | Streamlit (`app.py`, `cafae/ui/`) | raíz |
+| Frontend | React 19 + TypeScript + Vite (única UI, ADR-005) | `frontend/src/` |
 | Documentos | PDF (reportlab), Excel (openpyxl), TXT | `cafae/documentos/` |
 | Empaquetado | Docker multi-stage; el `dist` de Vite se sirve como estático desde `/` | `Dockerfile` |
 
@@ -125,7 +124,7 @@ cd frontend; npm run build                    # tsc + vite build -> dist/
   desarrollo, no lo copies a producción sin revisar.
 - Los tests usan `sys.path.insert(0, '/app')`: el código se ejecuta dentro del
   contenedor, no en Windows directamente.
-- Hay dos UIs: React es la vigente; `app.py`/`cafae/ui/` (Streamlit) es legado.
-  Antes de duplicar un cambio, confirmá cuál se mantiene.
+- Hay una sola UI: React (`frontend/src/`). Streamlit se retiró (ADR-005); si
+  encontrás `streamlit` en un comando o import, es documentación vieja.
 - `scripts/` contiene pobladores de datos de prueba (`poblar_*.sql`,
   `poblar_planillas_prueba.py`): nunca apuntarlos a datos reales.

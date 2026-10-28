@@ -13,7 +13,6 @@ WORKDIR /app
 COPY requirements.lock .
 RUN pip install --no-cache-dir -r requirements.lock && useradd --create-home cafae
 COPY cafae ./cafae
-COPY app.py .
 COPY assets ./assets
 # Frontend compilado listo para servir
 COPY --from=frontend-builder /build/dist ./static

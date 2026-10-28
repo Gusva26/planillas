@@ -44,8 +44,8 @@ listar archivos, responder dudas generales o conversación.
   Lógica de dominio en `cafae/*.py` (`planillas.py`, `trabajadores.py`,
   `importaciones.py`, `calculos.py`, `auth.py`, `auditoria.py`).
 - **Frontend**: React + TypeScript + Vite en `frontend/src/`
-  (`views/`, `components/`, `api/client.ts`, `context/AuthContext.tsx`).
-- **UI legada**: Streamlit en `app.py` y `cafae/ui/`.
+  (`views/`, `components/`, `hooks/`, `api/client.ts`, `api/errors.ts`,
+  `context/AuthContext.tsx`). Es la única UI (ADR-005): Streamlit se retiró.
 - **Documentos**: generación de PDF/Excel/TXT en `cafae/documentos/`.
 - **Base de datos**: `database/migrations/00N_*.sql` (numeración correlativa,
   nunca editar una migración ya aplicada) y `database/schema_propuesto.sql`.

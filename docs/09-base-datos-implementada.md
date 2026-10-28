@@ -2,7 +2,7 @@
 
 Fecha: **24/09/2026**. Etapa 1 completada técnicamente en desarrollo local; la aplicación de usuario comienza en la etapa 2. No es una habilitación para procesar pagos reales.
 
-**Registro de la etapa 1:** las cantidades y pendientes de este informe corresponden a ese corte. La etapa 2 ya añadió la séptima migración, la tabla de intentos de acceso y la aplicación Streamlit. Consulte el [estado de acceso y usuarios](10-acceso-y-usuarios.md) para la operación vigente.
+**Registro de la etapa 1:** las cantidades y pendientes de este informe corresponden a ese corte. La etapa 2 ya añadió la séptima migración, la tabla de intentos de acceso y la aplicación de usuario. Consulte el [estado de acceso y usuarios](10-acceso-y-usuarios.md) para la operación vigente.
 
 ## Entorno comprobado
 
