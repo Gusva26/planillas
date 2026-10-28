@@ -47,7 +47,7 @@ Toda respuesta `4xx`/`5xx` usa `application/problem+json` (RFC 9457):
 | `SIN_PERMISO` | 403 | El rol no tiene el permiso requerido |
 | `NO_ENCONTRADO` | 404 | Recurso inexistente (`NoEncontrado` en el servicio) |
 | `CONFLICTO_REVISION` | 409 | Otro usuario movió `revision_edicion` |
-| `CONFLICTO_ESTADO` | 409 | Estado incompatible (por ejemplo, versión ya cerrada) |
+| `CONFLICTO_ESTADO` | 409 | Estado incompatible o recurso en uso (`Conflicto`): versión ya cerrada, catálogo con dependencias |
 | `VALIDACION` | 422 | Campos inválidos o faltantes |
 | `ERROR_INTERNO` | 500 | Fallo no clasificado; nunca expone `str(exc)` |
 
@@ -118,6 +118,15 @@ leídos en **una sola transacción**, y los endpoints de documentos parten de es
 misma lectura. No es un detalle de implementación: si alguien edita o cierra la
 planilla mientras se arma la respuesta, las tres partes siguen siendo de la
 misma revisión. Si la versión no existe, la respuesta es `404 NO_ENCONTRADO`.
+
+### Borrado de catálogos
+
+`DELETE /api/catalogos/...` responde `200` con el mensaje de éxito, o bien:
+
+- `404 NO_ENCONTRADO` si el registro ya no existe (`NoEncontrado`).
+- `409 CONFLICTO_ESTADO` si sigue referenciado por otros datos (`Conflicto`).
+  En ese caso la salida correcta es `PATCH /api/catalogos/.../estado` para
+  desactivarlo, no reintentar el borrado.
 
 ## Creación de planilla
 

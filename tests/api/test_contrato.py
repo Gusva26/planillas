@@ -22,6 +22,7 @@ from cafae.api.errors import CATALOGO, MEDIA_TYPE, Problem, problema, problema_p
 from cafae.api.main import (
     access_error_handler,
     app,
+    conflicto_handler,
     http_exception_handler,
     no_encontrado_handler,
     serialization_failure_handler,
@@ -30,7 +31,7 @@ from cafae.api.main import (
     validation_error_handler,
 )
 from cafae.api.schemas import PlanillaCreada, RespuestaCreacionPlanilla
-from cafae.security import NoEncontrado, UserError
+from cafae.security import Conflicto, NoEncontrado, UserError
 
 
 def _request(path='/api/planillas'):
@@ -165,6 +166,18 @@ class Handlers(unittest.TestCase):
         body = _json(response)
         self.assertEqual(body['code'], 'NO_ENCONTRADO')
         self.assertEqual(body['detail'], 'Versión de planilla no encontrada.')
+
+    def test_recurso_en_uso_es_409(self):
+        """`Conflicto` evita que un catálogo en uso caiga como 400 genérico."""
+        response = self._respuesta(
+            conflicto_handler,
+            Conflicto('No se puede eliminar el cargo porque está asignado a trabajadores.'),
+            path='/api/catalogos/cargos/7',
+        )
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.media_type, MEDIA_TYPE)
+        body = _json(response)
+        self.assertEqual(body['code'], 'CONFLICTO_ESTADO')
 
     def test_conflicto_de_revision_es_409(self):
         from psycopg.errors import SerializationFailure
@@ -322,11 +335,11 @@ class ManejoDeErroresEnRutas(unittest.TestCase):
 class SinSqlEnRouters(unittest.TestCase):
     """D-03: el SQL vive en los servicios, no en los routers.
 
-    Solo cubre los routers ya migrados; `routes_catalogos` se sumará cuando sus
-    `DELETE ... RETURNING` se muevan a `CatalogoService`.
+    Cubre los tres routers que llegaron a tener SQL inline. Si aparece un
+    `conn.execute` o un `data_transaction` en la capa HTTP, la prueba falla.
     """
 
-    RUTAS = ['routes_planillas', 'routes_documentos']
+    RUTAS = ['routes_catalogos', 'routes_planillas', 'routes_documentos']
 
     def test_los_routers_migrados_no_ejecutan_sql_ni_abren_transacciones(self):
         for nombre in self.RUTAS:
@@ -402,6 +415,34 @@ class RoutersDeleganEnElServicio(unittest.TestCase):
         servicio.assert_called_once_with('token', 11, permiso='generar_documentos')
         self.assertEqual(respuesta.status_code, 200)
         self.assertEqual(respuesta.body, b'%PDF-1.4')
+
+    def test_los_borrados_de_catalogos_delegan_en_el_servicio(self):
+        """Cada `DELETE` del router es una llamada al servicio, sin SQL."""
+        from cafae.api import routes_catalogos
+
+        casos = [
+            (routes_catalogos.delete_nivel, 'delete_nivel'),
+            (routes_catalogos.delete_institucion, 'delete_institucion'),
+            (routes_catalogos.delete_area, 'delete_area_sede'),
+            (routes_catalogos.delete_meta, 'delete_meta'),
+            (routes_catalogos.delete_firma, 'delete_firma'),
+            (routes_catalogos.delete_programa, 'delete_programa'),
+            (routes_catalogos.delete_partida, 'delete_partida'),
+            (routes_catalogos.delete_cargo, 'delete_cargo'),
+            (routes_catalogos.delete_categoria, 'delete_categoria'),
+            (routes_catalogos.delete_situacion, 'delete_situacion'),
+            (routes_catalogos.delete_subtipo, 'delete_subtipo'),
+        ]
+
+        for ruta, metodo in casos:
+            with self.subTest(ruta=ruta.__name__, servicio=metodo):
+                with mock.patch.object(
+                    routes_catalogos.catalogo_service, metodo
+                ) as servicio:
+                    respuesta = ruta(7, {'token': 'token'})
+
+                servicio.assert_called_once_with('token', 7)
+                self.assertTrue(respuesta['ok'])
 
 
 if __name__ == '__main__':

@@ -85,9 +85,10 @@ flowchart LR
 | `cafae/*.py` (servicios) | `cafae.db`, `security`, `calculos`, `documentos` | FastAPI |
 | `cafae/documentos/*` | `calculos`, tipos | `cafae.db` |
 
-**Violación actual**: 13 sentencias SQL sobreviven en `routes_catalogos.py`
-(`DELETE ... RETURNING` de cada catálogo). Planillas y documentos ya delegan en
-el servicio. Ver deuda D-03.
+**Estado**: ningún router ejecuta SQL ni abre transacciones. Los borrados de
+catálogos, la lectura de versiones y los documentos pasan por sus servicios, y
+una guardia AST (`tests/api/test_contrato.py`) falla si el SQL reaparece en la
+capa HTTP.
 
 ### Inventario
 
@@ -96,7 +97,7 @@ el servicio. Ver deuda D-03.
 | Endpoints | 99 | catálogos 62 · documentos 8 · planillas 7 · trabajadores 5 · auth 4 · users 4 · importaciones 4 · auditoría 2 · reportes 2 · health 1 |
 | Tablas | 35 | esquema `cafae` |
 | Migraciones | 8 | `001`–`008`, inmutables por SHA-256 |
-| Pruebas | 100 | `unittest`, 8 runners, base desechable `cafae_test_*` |
+| Pruebas | 106 | `unittest`, 8 runners, base desechable `cafae_test_*` |
 | UIs | 1 | React + Vite (ADR-005); Streamlit retirado el 28/10 |
 | Logging estructurado | 0 | sin `logging` en `cafae/`; 3 `print` |
 
@@ -118,11 +119,11 @@ el servicio. Ver deuda D-03.
 | --- | --- | --- | --- | --- |
 | D-01 | Resuelto (era Crítico) | El TXT exige `txt_bancario`, está bloqueado por D.5 y solo se emite desde versión cerrada | `routes_documentos.py:20-42,168-208`; `tests/seguridad/` | 28/10 |
 | D-02 | Resuelto (era Crítico) | Un solo esquema de credenciales: `Authorization: Bearer`; sin query string ni cabeceras alternativas | `api/deps.py`; `frontend/src/api/client.ts` | 28/10 |
-| D-03 | Alto | SQL y lecturas dentro de routers: quedan los 13 `DELETE ... RETURNING` de catálogos. Planillas y documentos leen por el servicio y una guardia AST lo verifica | `routes_catalogos.py`; `tests/api/test_contrato.py` | 3 |
+| D-03 | Resuelto (era Alto) | Ningún router ejecuta SQL ni abre transacciones. Los 13 `DELETE ... RETURNING` de catálogos viven ahora en `CatalogoService._borrar_catalogo`, que traduce ausencia (`NoEncontrado` → 404) y uso (`Conflicto` → 409). Una guardia AST cubre los tres routers | `cafae/catalogos.py`; `tests/api/test_contrato.py` | 28/10 |
 | D-04 | Resuelto (era Alto) | Cabecera, firmas y líneas de una versión salen de una sola transacción: `get_version_completa` y `get_linea_con_version`. Antes se armaban con dos y tres lecturas y podían mezclar revisiones | `cafae/planillas.py`; `routes_planillas.py`; `routes_documentos.py` | 28/10 |
 | D-05 | Resuelto | Los ocho endpoints de documentos exigen `generar_documentos`; `txt_bancario` además exige versión cerrada y D.5 habilitado. `CONSULTA` solo lee | `routes_documentos.py:21-22,69-211`; `tests/seguridad/test_documentos.py` | 28/10 |
 | D-06 | Resuelto (era Parcial) | Sobre de error uniforme (RFC 9457) con `code` estable, `403`/`401` para `AccessError`/`SessionError`, `409` para conflictos de revisión y `422` para validación. Ningún router captura `UserError`: los siete delegan en el handler global y una guardia AST lo verifica | `api/errors.py`; `api/main.py`; `tests/api/test_contrato.py` | 28/10 |
-| D-07 | Alto | 62 endpoints en un archivo de 992 líneas | `routes_catalogos.py` | 3 |
+| D-07 | Alto | 62 endpoints en un archivo de 879 líneas | `routes_catalogos.py` | 3 |
 | D-08 | Medio | Sin logging estructurado ni ID de correlación | `cafae/**` (0 loggers, 3 `print`) | 6 |
 | D-09 | Medio | CORS `*` con credenciales, innecesario en mismo origen | `main.py:52-58` | 4 |
 | D-10 | Resuelto (era Medio) | Contrato tipado en el cliente: `apiRequest<T>` sin `any`, `ApiError` sobre RFC 9457, `Pagina[T]` estándar y `usePaginacion`. Queda un `any` documentado en `ReportesView` porque los 9 reportes no tienen esquema propio | `frontend/src/api/`; `frontend/src/hooks/usePaginacion.ts` | 2 |
@@ -145,7 +146,7 @@ detectado en la base responde `409 CONFLICTO_REVISION` en vez de `500`, y
 crecen sin techo usan el sobre `Pagina[T]` (`GET /api/auditoria`) y el cliente
 ramifica por `code`. Ningún router de dominio captura `UserError`: se quitaron
 55 mapeos locales (48 en catálogos, 5 en trabajadores, 2 en reportes) y una
-guardia AST falla si reaparecen. Pruebas: `python scripts/test_api.py` (26
+guardia AST falla si reaparecen. Pruebas: `python scripts/test_api.py` (28
 casos, sin base de datos).
 
 **Lectura consistente de versiones 28/10/2026.** `GET /api/planillas/versiones/{id}`
@@ -156,6 +157,19 @@ diferentes si alguien editaba o cerraba la planilla en el medio. Ahora
 una sola transacción, y los dos routers dejaron de contener SQL. Los servicios
 pueden señalar un recurso ausente con `NoEncontrado`, que el API traduce a
 `404 NO_ENCONTRADO`.
+
+**Borrado de catálogos en el servicio 28/10/2026.** Los once `DELETE` de
+catálogos ejecutaban SQL y capturaban `ForeignKeyViolation` dentro del router.
+Ahora `CatalogoService` expone `delete_nivel`, `delete_institucion`,
+`delete_area_sede`, `delete_meta`, `delete_firma`, `delete_programa`,
+`delete_partida`, `delete_cargo`, `delete_categoria`, `delete_situacion` y
+`delete_subtipo`, todos sobre un `_borrar_catalogo` que distingue los dos
+desenlaces posibles: `NoEncontrado` si el registro no existe y `Conflicto` si
+sigue en uso. El API traduce el segundo a `409 CONFLICTO_ESTADO`, así que un
+catálogo con dependencias ya no comparte código con un rechazo de validación.
+`routes_catalogos.py` bajó de 992 a 879 líneas y quedó libre de psycopg; la
+guardia `SinSqlEnRouters` ahora también lo cubre. Pruebas: 106 en total, con
+cuatro casos nuevos de borrado contra PostgreSQL.
 
 **Retiro de Streamlit 28/10/2026.** Se ejecutó el plan de ADR-005: se
 eliminaron `app.py`, `cafae/ui/` y `.streamlit/`, la dependencia `streamlit`

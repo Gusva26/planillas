@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from psycopg.errors import CheckViolation, ForeignKeyViolation, UniqueViolation
 
 from cafae.auth import AuthService
-from cafae.security import AccessError, UserError
+from cafae.security import AccessError, Conflicto, NoEncontrado, UserError
 
 
 def _clean_text(val, name, min_len=1, max_len=200, required=True):
@@ -799,4 +799,136 @@ class CatalogoService:
             nuevo_estado = (not actual['activo']) if activo is None else bool(activo)
             conn.execute('UPDATE tipos_descuento SET activo = %s WHERE id = %s', (nuevo_estado, tipo_id))
             return nuevo_estado
+
+    # =========================================================================
+    # D. BORRADO DEFINITIVO DE CATÁLOGOS
+    # =========================================================================
+    # Un catálogo en uso no se borra: la clave foránea lo impide y la salida
+    # correcta es desactivarlo. La traducción de ese choque vive aquí y no en el
+    # router, que así no conoce psycopg ni escribe SQL (D-03).
+
+    def _borrar_catalogo(self, token, sentencias, *, ausente, en_uso):
+        """Ejecuta `sentencias` en una transacción y traduce los dos fallos.
+
+        `sentencias` es una lista de `(sql, params)`; la última debe ser el
+        `DELETE ... RETURNING`. Los nombres de tabla son constantes de este
+        módulo, nunca datos del usuario.
+        """
+        try:
+            with self.auth.data_transaction(token, 'catalogos') as (conn, _):
+                cursor = None
+                for sql, params in sentencias:
+                    cursor = conn.execute(sql, params)
+                if not cursor.fetchone():
+                    raise NoEncontrado(ausente)
+        except ForeignKeyViolation as exc:
+            raise Conflicto(en_uso) from exc
+
+    def delete_nivel(self, token, nivel_id):
+        nivel_id = int(nivel_id)
+        self._borrar_catalogo(
+            token,
+            [
+                ('DELETE FROM nivel_metas WHERE nivel_id = %s', (nivel_id,)),
+                ('DELETE FROM niveles WHERE id = %s RETURNING id', (nivel_id,)),
+            ],
+            ausente='Nivel educativo no encontrado.',
+            en_uso='No se puede eliminar el nivel educativo porque está asignado a '
+                   'instituciones educativas o trabajadores. Use la opción "Desactivar".',
+        )
+
+    def delete_institucion(self, token, institucion_id):
+        self._borrar_catalogo(
+            token,
+            [('DELETE FROM instituciones WHERE id = %s RETURNING id', (int(institucion_id),))],
+            ausente='Institución no encontrada.',
+            en_uso='No se puede eliminar la institución porque tiene trabajadores o '
+                   'registros de planillas vinculados. Utilice la opción "Desactivar".',
+        )
+
+    def delete_area_sede(self, token, area_id):
+        self._borrar_catalogo(
+            token,
+            [('DELETE FROM areas_sede WHERE id = %s RETURNING id', (int(area_id),))],
+            ausente='Área de sede no encontrada.',
+            en_uso='No se puede eliminar el área porque está vinculada a trabajadores o '
+                   'planillas históricas. Por seguridad, use la opción "Desactivar".',
+        )
+
+    def delete_meta(self, token, meta_id):
+        meta_id = int(meta_id)
+        self._borrar_catalogo(
+            token,
+            [
+                ('DELETE FROM nivel_metas WHERE meta_id = %s', (meta_id,)),
+                ('DELETE FROM metas WHERE id = %s RETURNING id', (meta_id,)),
+            ],
+            ausente='Meta presupuestaria no encontrada.',
+            en_uso='No se puede eliminar la meta porque está asignada a instituciones '
+                   'educativas, áreas o planillas. Desvincúlela primero o use la opción '
+                   '"Desactivar".',
+        )
+
+    def delete_firma(self, token, firma_id):
+        self._borrar_catalogo(
+            token,
+            [('DELETE FROM firmas WHERE id = %s RETURNING id', (int(firma_id),))],
+            ausente='Firma no encontrada.',
+            en_uso='No se puede eliminar la firma porque está asociada a planillas o '
+                   'documentos históricos. Use la opción "Desactivar".',
+        )
+
+    def delete_programa(self, token, programa_id):
+        self._borrar_catalogo(
+            token,
+            [('DELETE FROM programas WHERE id = %s RETURNING id', (int(programa_id),))],
+            ausente='Programa no encontrado.',
+            en_uso='No se puede eliminar el programa porque tiene subprogramas o metas '
+                   'asignadas. Use la opción "Desactivar".',
+        )
+
+    def delete_partida(self, token, partida_id):
+        self._borrar_catalogo(
+            token,
+            [('DELETE FROM partidas_presupuestarias WHERE id = %s RETURNING id', (int(partida_id),))],
+            ausente='Partida no encontrada.',
+            en_uso='No se puede eliminar la partida porque está vinculada a metas '
+                   'presupuestarias. Use la opción "Desactivar".',
+        )
+
+    def delete_cargo(self, token, cargo_id):
+        self._borrar_catalogo(
+            token,
+            [('DELETE FROM cargos WHERE id = %s RETURNING id', (int(cargo_id),))],
+            ausente='Cargo no encontrado.',
+            en_uso='No se puede eliminar el cargo porque está asignado a trabajadores. '
+                   'Use la opción "Desactivar".',
+        )
+
+    def delete_categoria(self, token, categoria_id):
+        self._borrar_catalogo(
+            token,
+            [('DELETE FROM categorias WHERE id = %s RETURNING id', (int(categoria_id),))],
+            ausente='Categoría no encontrada.',
+            en_uso='No se puede eliminar la categoría porque está asignada a trabajadores. '
+                   'Use la opción "Desactivar".',
+        )
+
+    def delete_situacion(self, token, situacion_id):
+        self._borrar_catalogo(
+            token,
+            [('DELETE FROM situaciones WHERE id = %s RETURNING id', (int(situacion_id),))],
+            ausente='Situación laboral no encontrada.',
+            en_uso='No se puede eliminar la situación porque está asignada a trabajadores. '
+                   'Use la opción "Desactivar".',
+        )
+
+    def delete_subtipo(self, token, subtipo_id):
+        self._borrar_catalogo(
+            token,
+            [('DELETE FROM subtipos_trabajador WHERE id = %s RETURNING id', (int(subtipo_id),))],
+            ausente='Subtipo no encontrado.',
+            en_uso='No se puede eliminar el subtipo porque está asignado a trabajadores. '
+                   'Use la opción "Desactivar".',
+        )
 

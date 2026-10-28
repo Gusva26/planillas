@@ -11,7 +11,7 @@ sys.path.insert(0, '/app')
 
 from cafae.auth import AuthService
 from cafae.catalogos import CatalogoService
-from cafae.security import AccessError, SessionError, UserError
+from cafae.security import AccessError, Conflicto, NoEncontrado, SessionError, UserError
 
 if not os.environ.get('CAFAE_DB_NAME', '').startswith('cafae_test_'):
     raise SystemExit('Estas pruebas requieren una base cafae_test_* aislada.')
@@ -305,6 +305,52 @@ class TestCatalogos(unittest.TestCase):
                 'UGEL', 'SISTEMA',
                 zona_horaria='Zona/Ficticia_Invalida'
             )
+
+
+class BorradoDeCatalogos(unittest.TestCase):
+    """D-03: el borrado vive en el servicio y traduce ausencia (`404`) y uso (`409`)."""
+
+    @classmethod
+    def setUpClass(cls):
+        try:
+            AUTH.bootstrap('admin_cat', 'Administrador Catálogos', ADMIN_PWD)
+        except UserError:
+            pass
+
+    def setUp(self):
+        self.origin = uuid.uuid4().hex
+        self.token = AUTH.login('admin_cat', ADMIN_PWD, self.origin)
+
+    def test_borrar_elimina_el_registro(self):
+        cid = CAT.create_cargo(self.token, f'Cargo {uuid.uuid4().hex[:6]}')
+        CAT.delete_cargo(self.token, cid)
+        self.assertFalse(any(c['id'] == cid for c in CAT.list_cargos(self.token)))
+
+    def test_borrar_dos_veces_es_no_encontrado(self):
+        sid = CAT.create_situacion(self.token, f'Situación {uuid.uuid4().hex[:6]}')
+        CAT.delete_situacion(self.token, sid)
+        with self.assertRaises(NoEncontrado):
+            CAT.delete_situacion(self.token, sid)
+
+    def test_no_borra_un_catalogo_en_uso(self):
+        pid = CAT.create_partida(self.token, f'P_{uuid.uuid4().hex[:4]}', 'Partida en uso')
+        CAT.create_meta(self.token, f'M_{uuid.uuid4().hex[:4]}', 'Meta que la usa', partida_id=pid)
+
+        with self.assertRaises(Conflicto) as ctx:
+            CAT.delete_partida(self.token, pid)
+
+        self.assertIn('Desactivar', str(ctx.exception))
+        # El borrado fallido no deja rastro: la partida sigue disponible.
+        self.assertTrue(any(p['id'] == pid for p in CAT.list_partidas(self.token)))
+
+    def test_nivel_con_meta_asociada_se_borra_igual(self):
+        nid = CAT.create_nivel(self.token, f'Nivel {uuid.uuid4().hex[:6]}')
+        mid = CAT.create_meta(self.token, f'M_{uuid.uuid4().hex[:4]}', 'Meta del nivel')
+        CAT.set_nivel_meta(self.token, nid, mid)
+
+        CAT.delete_nivel(self.token, nid)
+
+        self.assertFalse(any(n['id'] == nid for n in CAT.list_niveles(self.token)))
 
 
 if __name__ == '__main__':

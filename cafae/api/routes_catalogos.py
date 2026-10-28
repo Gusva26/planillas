@@ -2,7 +2,6 @@
 from typing import Annotated, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
-from psycopg.errors import ForeignKeyViolation
 
 from cafae.api.deps import get_current_user, require_role
 from cafae.catalogos import CatalogoService
@@ -169,19 +168,8 @@ def delete_nivel(
     item_id: int,
     user: Annotated[dict, Depends(require_role('ADMINISTRADOR'))]
 ):
-    token = user['token']
-    try:
-        with catalogo_service.auth.data_transaction(token, 'catalogos') as (conn, _):
-            conn.execute('DELETE FROM nivel_metas WHERE nivel_id = %s', (item_id,))
-            res = conn.execute('DELETE FROM niveles WHERE id = %s RETURNING id', (item_id,)).fetchone()
-            if not res:
-                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Nivel educativo no encontrado.')
-        return {'ok': True, 'mensaje': 'Nivel educativo eliminado con éxito.'}
-    except ForeignKeyViolation:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail='No se puede eliminar el nivel educativo porque está asignado a instituciones educativas o trabajadores. Use la opción "Desactivar".'
-        )
+    catalogo_service.delete_nivel(user['token'], item_id)
+    return {'ok': True, 'mensaje': 'Nivel educativo eliminado con éxito.'}
 
 
 # =============================================================================
@@ -273,18 +261,8 @@ def delete_institucion(
     item_id: int,
     user: Annotated[dict, Depends(require_role('ADMINISTRADOR'))]
 ):
-    token = user['token']
-    try:
-        with catalogo_service.auth.data_transaction(token, 'catalogos') as (conn, _):
-            res = conn.execute('DELETE FROM instituciones WHERE id = %s RETURNING id', (item_id,)).fetchone()
-            if not res:
-                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Institución no encontrada.')
-        return {'ok': True, 'mensaje': 'Institución eliminada definitivamente con éxito.'}
-    except ForeignKeyViolation:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail='No se puede eliminar la institución porque tiene trabajadores o registros de planillas vinculados. Utilice la opción "Desactivar".'
-        )
+    catalogo_service.delete_institucion(user['token'], item_id)
+    return {'ok': True, 'mensaje': 'Institución eliminada definitivamente con éxito.'}
 
 
 # =============================================================================
@@ -338,18 +316,8 @@ def delete_area(
     item_id: int,
     user: Annotated[dict, Depends(require_role('ADMINISTRADOR'))]
 ):
-    token = user['token']
-    try:
-        with catalogo_service.auth.data_transaction(token, 'catalogos') as (conn, _):
-            res = conn.execute('DELETE FROM areas_sede WHERE id = %s RETURNING id', (item_id,)).fetchone()
-            if not res:
-                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Área de sede no encontrada.')
-        return {'ok': True, 'mensaje': 'Área de sede eliminada definitivamente con éxito.'}
-    except ForeignKeyViolation:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail='No se puede eliminar el área porque está vinculada a trabajadores o planillas históricas. Por seguridad, use la opción "Desactivar".'
-        )
+    catalogo_service.delete_area_sede(user['token'], item_id)
+    return {'ok': True, 'mensaje': 'Área de sede eliminada definitivamente con éxito.'}
 
 
 # =============================================================================
@@ -417,20 +385,8 @@ def delete_meta(
     item_id: int,
     user: Annotated[dict, Depends(require_role('ADMINISTRADOR'))]
 ):
-    token = user['token']
-    try:
-        with catalogo_service.auth.data_transaction(token, 'catalogos') as (conn, _):
-            # Limpiar asociaciones en nivel_metas si existieran
-            conn.execute('DELETE FROM nivel_metas WHERE meta_id = %s', (item_id,))
-            res = conn.execute('DELETE FROM metas WHERE id = %s RETURNING id', (item_id,)).fetchone()
-            if not res:
-                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Meta presupuestaria no encontrada.')
-        return {'ok': True, 'mensaje': 'Meta presupuestaria eliminada con éxito.'}
-    except ForeignKeyViolation:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail='No se puede eliminar la meta porque está asignada a instituciones educativas, áreas o planillas. Desvincúlela primero o use la opción "Desactivar".'
-        )
+    catalogo_service.delete_meta(user['token'], item_id)
+    return {'ok': True, 'mensaje': 'Meta presupuestaria eliminada con éxito.'}
 
 
 # =============================================================================
@@ -497,18 +453,8 @@ def delete_firma(
     item_id: int,
     user: Annotated[dict, Depends(require_role('ADMINISTRADOR'))]
 ):
-    token = user['token']
-    try:
-        with catalogo_service.auth.data_transaction(token, 'catalogos') as (conn, _):
-            res = conn.execute('DELETE FROM firmas WHERE id = %s RETURNING id', (item_id,)).fetchone()
-            if not res:
-                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Firma no encontrada.')
-        return {'ok': True, 'mensaje': 'Firma autorizada eliminada con éxito.'}
-    except ForeignKeyViolation:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail='No se puede eliminar la firma porque está asociada a planillas o documentos históricos. Use la opción "Desactivar".'
-        )
+    catalogo_service.delete_firma(user['token'], item_id)
+    return {'ok': True, 'mensaje': 'Firma autorizada eliminada con éxito.'}
 
 
 # =============================================================================
@@ -569,18 +515,8 @@ def delete_programa(
     item_id: int,
     user: Annotated[dict, Depends(require_role('ADMINISTRADOR'))]
 ):
-    token = user['token']
-    try:
-        with catalogo_service.auth.data_transaction(token, 'catalogos') as (conn, _):
-            res = conn.execute('DELETE FROM programas WHERE id = %s RETURNING id', (item_id,)).fetchone()
-            if not res:
-                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Programa no encontrado.')
-        return {'ok': True, 'mensaje': 'Programa eliminado con éxito.'}
-    except ForeignKeyViolation:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail='No se puede eliminar el programa porque tiene subprogramas o metas asignadas. Use la opción "Desactivar".'
-        )
+    catalogo_service.delete_programa(user['token'], item_id)
+    return {'ok': True, 'mensaje': 'Programa eliminado con éxito.'}
 
 
 # =============================================================================
@@ -634,18 +570,8 @@ def delete_partida(
     item_id: int,
     user: Annotated[dict, Depends(require_role('ADMINISTRADOR'))]
 ):
-    token = user['token']
-    try:
-        with catalogo_service.auth.data_transaction(token, 'catalogos') as (conn, _):
-            res = conn.execute('DELETE FROM partidas_presupuestarias WHERE id = %s RETURNING id', (item_id,)).fetchone()
-            if not res:
-                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Partida no encontrada.')
-        return {'ok': True, 'mensaje': 'Partida eliminada con éxito.'}
-    except ForeignKeyViolation:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail='No se puede eliminar la partida porque está vinculada a metas presupuestarias. Use la opción "Desactivar".'
-        )
+    catalogo_service.delete_partida(user['token'], item_id)
+    return {'ok': True, 'mensaje': 'Partida eliminada con éxito.'}
 
 
 # =============================================================================
@@ -700,18 +626,8 @@ def delete_cargo(
     item_id: int,
     user: Annotated[dict, Depends(require_role('ADMINISTRADOR'))]
 ):
-    token = user['token']
-    try:
-        with catalogo_service.auth.data_transaction(token, 'catalogos') as (conn, _):
-            res = conn.execute('DELETE FROM cargos WHERE id = %s RETURNING id', (item_id,)).fetchone()
-            if not res:
-                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Cargo no encontrado.')
-        return {'ok': True, 'mensaje': 'Cargo eliminado con éxito.'}
-    except ForeignKeyViolation:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail='No se puede eliminar el cargo porque está asignado a trabajadores. Use la opción "Desactivar".'
-        )
+    catalogo_service.delete_cargo(user['token'], item_id)
+    return {'ok': True, 'mensaje': 'Cargo eliminado con éxito.'}
 
 
 # =============================================================================
@@ -766,18 +682,8 @@ def delete_categoria(
     item_id: int,
     user: Annotated[dict, Depends(require_role('ADMINISTRADOR'))]
 ):
-    token = user['token']
-    try:
-        with catalogo_service.auth.data_transaction(token, 'catalogos') as (conn, _):
-            res = conn.execute('DELETE FROM categorias WHERE id = %s RETURNING id', (item_id,)).fetchone()
-            if not res:
-                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Categoría no encontrada.')
-        return {'ok': True, 'mensaje': 'Categoría eliminada con éxito.'}
-    except ForeignKeyViolation:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail='No se puede eliminar la categoría porque está asignada a trabajadores. Use la opción "Desactivar".'
-        )
+    catalogo_service.delete_categoria(user['token'], item_id)
+    return {'ok': True, 'mensaje': 'Categoría eliminada con éxito.'}
 
 
 # =============================================================================
@@ -832,18 +738,8 @@ def delete_situacion(
     item_id: int,
     user: Annotated[dict, Depends(require_role('ADMINISTRADOR'))]
 ):
-    token = user['token']
-    try:
-        with catalogo_service.auth.data_transaction(token, 'catalogos') as (conn, _):
-            res = conn.execute('DELETE FROM situaciones WHERE id = %s RETURNING id', (item_id,)).fetchone()
-            if not res:
-                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Situación laboral no encontrada.')
-        return {'ok': True, 'mensaje': 'Situación laboral eliminada con éxito.'}
-    except ForeignKeyViolation:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail='No se puede eliminar la situación porque está asignada a trabajadores. Use la opción "Desactivar".'
-        )
+    catalogo_service.delete_situacion(user['token'], item_id)
+    return {'ok': True, 'mensaje': 'Situación laboral eliminada con éxito.'}
 
 
 # =============================================================================
@@ -898,18 +794,8 @@ def delete_subtipo(
     item_id: int,
     user: Annotated[dict, Depends(require_role('ADMINISTRADOR'))]
 ):
-    token = user['token']
-    try:
-        with catalogo_service.auth.data_transaction(token, 'catalogos') as (conn, _):
-            res = conn.execute('DELETE FROM subtipos_trabajador WHERE id = %s RETURNING id', (item_id,)).fetchone()
-            if not res:
-                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Subtipo no encontrado.')
-        return {'ok': True, 'mensaje': 'Subtipo eliminado con éxito.'}
-    except ForeignKeyViolation:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail='No se puede eliminar el subtipo porque está asignado a trabajadores. Use la opción "Desactivar".'
-        )
+    catalogo_service.delete_subtipo(user['token'], item_id)
+    return {'ok': True, 'mensaje': 'Subtipo eliminado con éxito.'}
 
 
 # =============================================================================
