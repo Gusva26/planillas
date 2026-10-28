@@ -93,4 +93,5 @@ docker compose stop
 8. [Plan de Pruebas y Criterios de Aceptación](docs/05-plan-y-pruebas.md)
 9. [Base de Datos Implementada](docs/09-base-datos-implementada.md)
 10. [Acceso, Usuarios y Roles](docs/10-acceso-y-usuarios.md)
-11. [Decisiones de Arquitectura (ADR)](docs/adr/README.md)
+11. [Contrato del API](docs/11-contrato-api.md)
+12. [Decisiones de Arquitectura (ADR)](docs/adr/README.md)

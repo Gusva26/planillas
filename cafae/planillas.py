@@ -242,10 +242,17 @@ class PlanillaService:
                     )
                     orden += 1
 
+                revision = conn.execute(
+                    'SELECT revision_edicion FROM planilla_versiones WHERE id = %s',
+                    (version_id,)
+                ).fetchone()['revision_edicion']
                 return {
                     'planilla_id': planilla_id,
                     'version_id': version_id,
-                    'trabajadores_copiados': len(trabajadores)
+                    'trabajadores_copiados': len(trabajadores),
+                    # Las inserciones de detalle subieron la revisión:
+                    # el cliente no debe asumir 1 ni volver a leerla.
+                    'revision_edicion': revision,
                 }
         except UniqueViolation:
             raise UserError(f'Ya existe una planilla de {tipo} registrada para el periodo {anio}-{mes:02d}.')
@@ -375,10 +382,15 @@ class PlanillaService:
                     (nuevo_detalle_id, user['id'], d['id'])
                 )
 
+            revision = conn.execute(
+                'SELECT revision_edicion FROM planilla_versiones WHERE id = %s',
+                (version_id,)
+            ).fetchone()['revision_edicion']
             return {
                 'planilla_id': planilla_id,
                 'version_id': version_id,
-                'trabajadores_copiados': len(detalles_fuente)
+                'trabajadores_copiados': len(detalles_fuente),
+                'revision_edicion': revision,
             }
 
     # =========================================================================

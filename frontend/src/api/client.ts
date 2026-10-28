@@ -43,7 +43,7 @@ export async function apiRequest<T = any>(
   }
 
   const contentType = response.headers.get('content-type');
-  if (contentType && contentType.includes('application/json')) {
+  if (contentType && contentType.includes('json')) {
     const data = await response.json();
     if (!response.ok) {
       throw new Error(data.detail || 'Ocurrió un error en el servidor.');

@@ -121,7 +121,7 @@ flowchart LR
 | D-03 | Alto | SQL y lecturas dentro de routers | `routes_catalogos.py`; `routes_planillas.py:87`; `routes_documentos.py:22` | 3 |
 | D-04 | Alto | Respuestas armadas en dos transacciones ⇒ lectura inconsistente bajo edición concurrente | `routes_planillas.py:87-116`; `routes_documentos.py:21-34` | 3 |
 | D-05 | Resuelto | Los ocho endpoints de documentos exigen `generar_documentos`; `txt_bancario` además exige versión cerrada y D.5 habilitado. `CONSULTA` solo lee | `routes_documentos.py:21-22,69-211`; `tests/seguridad/test_documentos.py` | 28/10 |
-| D-06 | Alto | Mapeo de errores repetido por endpoint y `str(exc)` expuesto al cliente | `routes_planillas.py:52-156`; handlers en `main.py:61-82` | 2 / 4 |
+| D-06 | Parcial | Sobre de error uniforme (RFC 9457) con `code` estable y `409` para conflictos de revisión; queda el mapeo repetido por endpoint | `api/errors.py`; `api/main.py:86-143` | 28/10 |
 | D-07 | Alto | 62 endpoints en un archivo de 963 líneas | `routes_catalogos.py` | 3 |
 | D-08 | Medio | Sin logging estructurado ni ID de correlación | `cafae/**` (0 loggers, 3 `print`) | 6 |
 | D-09 | Medio | CORS `*` con credenciales, innecesario en mismo origen | `main.py:52-58` | 4 |
@@ -136,6 +136,13 @@ vigente (`CAFAE_TXT_BANCARIO=1` es la única habilitación) y exigen versión
 `CERRADA`. El resto de documentos (PDF, Excel, remuneraciones, boletas y
 cuadernillo) exigen `generar_documentos`, y `CONSULTA` conserva solo lectura.
 Pruebas: `python scripts/test_seguridad.py` (15 casos).
+
+**Contrato de API 28/10/2026.** Todo error sale como `application/problem+json`
+con `type`, `title`, `status`, `code`, `detail` e `instance`
+([`docs/11-contrato-api.md`](11-contrato-api.md)); el conflicto de revisión
+detectado en la base responde `409 CONFLICTO_REVISION` en vez de `500`, y
+`POST /api/planillas` devuelve la `revision_edicion` vigente. Pruebas:
+`python scripts/test_api.py` (15 casos, sin base de datos).
 
 ### Riesgos abiertos
 

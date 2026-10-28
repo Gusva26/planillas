@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
 from cafae.api.deps import get_current_user, require_role
+from cafae.api.schemas import RespuestaCreacionPlanilla
 from cafae.planillas import PlanillaService
 from cafae.security import UserError, AccessError
 
@@ -53,11 +54,16 @@ def list_planillas(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
 
-@router.post('')
+@router.post('', response_model=RespuestaCreacionPlanilla)
 def create_planilla(
     req: PlanillaCreateRequest,
     user: Annotated[dict, Depends(require_role('ADMINISTRADOR', 'PLANILLAS'))]
 ):
+    """Crea la versión 1 desde el maestro o copiando el mes anterior.
+
+    Devuelve la `revision_edicion` vigente: las inserciones de detalle la
+    incrementan, así que el cliente no debe asumir 1 ni volver a leerla.
+    """
     try:
         if req.origen == 'COPIA':
             res = planilla_service.copiar_mes_anterior(

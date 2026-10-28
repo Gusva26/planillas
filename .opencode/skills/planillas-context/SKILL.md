@@ -88,8 +88,8 @@ cd frontend; npm run build                    # tsc + vite build -> dist/
 - Cada dominio tiene su runner: `scripts/test_auth.py`,
   `scripts/test_planillas.py`, `scripts/test_trabajadores.py`,
   `scripts/test_importaciones.py`, `scripts/test_catalogos.py`,
-  `scripts/test_integral.py`, `scripts/test_seguridad.py` (este último no
-  necesita base de datos).
+  `scripts/test_integral.py`, `scripts/test_seguridad.py` y
+  `scripts/test_api.py` (estos dos últimos no necesitan base de datos).
 - El runner crea una base desechable `cafae_test_<random>` en el contenedor,
   migra, corre el test con el código montado y **borra la base** al final.
   Requiere el contenedor `db` arriba (`docker compose up -d --wait`).
