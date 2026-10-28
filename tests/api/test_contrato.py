@@ -19,9 +19,11 @@ from starlette.requests import Request
 
 from cafae.api.errors import CATALOGO, MEDIA_TYPE, Problem, problema, problema_para_status
 from cafae.api.main import (
+    access_error_handler,
     app,
     http_exception_handler,
     serialization_failure_handler,
+    session_error_handler,
     user_error_handler,
     validation_error_handler,
 )
@@ -46,6 +48,20 @@ def _request(path='/api/planillas'):
 
 def _json(response):
     return json.loads(response.body.decode('utf-8'))
+
+
+# `AccessError` y `SessionError` heredan de `UserError`: capturarlas en un router
+# esquiva los handlers globales de 403 y 401 igual que capturar la base.
+FAMILIA_USER_ERROR = {'UserError', 'AccessError', 'SessionError'}
+
+
+def _captura_user_error(tipo):
+    """True si el `except` atrapa la familia `UserError`, en forma simple o tupla."""
+    if isinstance(tipo, ast.Name):
+        return tipo.id in FAMILIA_USER_ERROR
+    if isinstance(tipo, ast.Tuple):
+        return any(_captura_user_error(elemento) for elemento in tipo.elts)
+    return False
 
 
 class SobreDeError(unittest.TestCase):
@@ -115,6 +131,25 @@ class Handlers(unittest.TestCase):
         self.assertEqual(body['code'], 'NO_ENCONTRADO')
         self.assertEqual(body['status'], 404)
         self.assertEqual(body['detail'], 'Versión no encontrada.')
+
+    def test_error_de_permiso_es_403(self):
+        from cafae.security import AccessError
+
+        response = self._respuesta(access_error_handler, AccessError('No tiene el permiso.'))
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.media_type, MEDIA_TYPE)
+        body = _json(response)
+        self.assertEqual(body['code'], 'SIN_PERMISO')
+        self.assertEqual(body['detail'], 'No tiene el permiso.')
+
+    def test_sesion_vencida_es_401(self):
+        from cafae.security import SessionError
+
+        response = self._respuesta(session_error_handler, SessionError('Sesión vencida.'))
+        self.assertEqual(response.status_code, 401)
+        body = _json(response)
+        self.assertEqual(body['code'], 'NO_AUTENTICADO')
+        self.assertEqual(body['detail'], 'Sesión vencida.')
 
     def test_conflicto_de_revision_es_409(self):
         from psycopg.errors import SerializationFailure
@@ -229,11 +264,17 @@ class PaginacionDeListados(unittest.TestCase):
 class ManejoDeErroresEnRutas(unittest.TestCase):
     """El mapeo `UserError` → 400 vive en el handler global, no en cada ruta."""
 
+    # `routes_auth` queda fuera a propósito: el login distingue credenciales
+    # inválidas (401) de solicitudes mal formadas (400), y el handler global no
+    # puede deducir esa intención de la clase de excepción.
     RUTAS = [
         'routes_planillas',
         'routes_importaciones',
         'routes_documentos',
         'routes_auditoria',
+        'routes_catalogos',
+        'routes_reportes',
+        'routes_trabajadores',
     ]
 
     def test_los_routers_no_repiten_el_mapeo_de_user_error(self):
@@ -244,14 +285,23 @@ class ManejoDeErroresEnRutas(unittest.TestCase):
                 capturas = [
                     nodo
                     for nodo in ast.walk(arbol)
-                    if isinstance(nodo, ast.ExceptHandler)
-                    and isinstance(nodo.type, ast.Name)
-                    and nodo.type.id == 'UserError'
+                    if isinstance(nodo, ast.ExceptHandler) and _captura_user_error(nodo.type)
                 ]
                 self.assertEqual(
                     capturas, [],
                     f'{nombre} captura UserError: el handler global ya lo traduce.',
                 )
+
+    def test_la_guardia_detecta_tuplas_de_excepciones(self):
+        """El chequeo cubre `except (UserError, Otra)`, no solo `except UserError`."""
+        arbol = ast.parse(
+            'try:\n'
+            '    pass\n'
+            'except (UserError, SessionError):\n'
+            '    pass\n'
+        )
+        handler = arbol.body[0].handlers[0]
+        self.assertTrue(_captura_user_error(handler.type))
 
 
 if __name__ == '__main__':

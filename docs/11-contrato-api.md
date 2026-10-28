@@ -181,5 +181,13 @@ python scripts/test_seguridad.py # permisos, Bearer y bloqueo D.5
 
 El test de contrato falla si un endpoint deja de documentar el sobre de error,
 si `POST /api/planillas` pierde `revision_edicion`, si `GET /api/auditoria`
-deja de publicar `Pagina[T]`, o si un router limpio vuelve a capturar
-`UserError` en lugar de dejarlo al handler global.
+deja de publicar `Pagina[T]`, o si cualquiera de los siete routers de dominio
+vuelve a capturar `UserError` en lugar de dejarlo al handler global. La única
+excepción deliberada es `routes_auth`: el login distingue credenciales
+inválidas (`401`) de solicitudes mal formadas (`400`), semántica que el handler
+global no puede deducir de la clase de excepción.
+
+Como `AccessError` y `SessionError` heredan de `UserError`, las rutas de
+dominio ya no las traducen a `400`: el handler global responde `403
+SIN_PERMISO` y `401 NO_AUTENTICADO` respectivamente, que es lo que el cliente
+ya sabe interpretar.

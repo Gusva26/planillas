@@ -7,7 +7,6 @@ from pydantic import BaseModel, Field
 
 from cafae.api.deps import get_current_user, require_role
 from cafae.trabajadores import TrabajadorService
-from cafae.security import UserError, AccessError
 
 router = APIRouter(prefix='/trabajadores', tags=['Personal'])
 trabajador_service = TrabajadorService()
@@ -59,29 +58,23 @@ def list_trabajadores(
     area_id: Optional[int] = None,
     cargo_id: Optional[int] = None,
 ):
-    try:
-        return trabajador_service.list_trabajadores(
-            user['token'],
-            tipo=tipo,
-            solo_activos=solo_activos,
-            query=q,
-            institucion_id=institucion_id,
-            area_id=area_id,
-            cargo_id=cargo_id,
-        )
-    except UserError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    return trabajador_service.list_trabajadores(
+        user['token'],
+        tipo=tipo,
+        solo_activos=solo_activos,
+        query=q,
+        institucion_id=institucion_id,
+        area_id=area_id,
+        cargo_id=cargo_id,
+    )
 
 
 @router.get('/{item_id}')
 def get_trabajador(item_id: int, user: Annotated[dict, Depends(get_current_user)]):
-    try:
-        t = trabajador_service.get_trabajador(user['token'], item_id)
-        if not t:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Trabajador no encontrado.')
-        return t
-    except UserError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    t = trabajador_service.get_trabajador(user['token'], item_id)
+    if not t:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Trabajador no encontrado.')
+    return t
 
 
 @router.post('')
@@ -89,11 +82,8 @@ def create_trabajador(
     req: TrabajadorCreateRequest,
     user: Annotated[dict, Depends(require_role('ADMINISTRADOR', 'PLANILLAS'))]
 ):
-    try:
-        new_id = trabajador_service.create_trabajador(user['token'], req.model_dump())
-        return {'ok': True, 'id': new_id, 'mensaje': 'Trabajador registrado con éxito.'}
-    except UserError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    new_id = trabajador_service.create_trabajador(user['token'], req.model_dump())
+    return {'ok': True, 'id': new_id, 'mensaje': 'Trabajador registrado con éxito.'}
 
 
 @router.put('/{item_id}')
@@ -102,12 +92,9 @@ def update_trabajador(
     req: TrabajadorUpdateRequest,
     user: Annotated[dict, Depends(require_role('ADMINISTRADOR', 'PLANILLAS'))]
 ):
-    try:
-        datos = req.model_dump(exclude={'revision'})
-        trabajador_service.update_trabajador(user['token'], item_id, datos)
-        return {'ok': True, 'mensaje': 'Ficha de trabajador actualizada con éxito.'}
-    except UserError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    datos = req.model_dump(exclude={'revision'})
+    trabajador_service.update_trabajador(user['token'], item_id, datos)
+    return {'ok': True, 'mensaje': 'Ficha de trabajador actualizada con éxito.'}
 
 
 @router.patch('/{item_id}/estado')
@@ -116,8 +103,5 @@ def set_active_trabajador(
     req: EstadoRequest,
     user: Annotated[dict, Depends(require_role('ADMINISTRADOR', 'PLANILLAS'))]
 ):
-    try:
-        trabajador_service.set_activo(user['token'], item_id, req.activo)
-        return {'ok': True, 'mensaje': f'Trabajador {"activado" if req.activo else "desactivado"} con éxito.'}
-    except UserError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    trabajador_service.set_activo(user['token'], item_id, req.activo)
+    return {'ok': True, 'mensaje': f'Trabajador {"activado" if req.activo else "desactivado"} con éxito.'}

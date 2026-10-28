@@ -95,7 +95,7 @@ flowchart LR
 | Endpoints | 99 | catálogos 62 · documentos 8 · planillas 7 · trabajadores 5 · auth 4 · users 4 · importaciones 4 · auditoría 2 · reportes 2 · health 1 |
 | Tablas | 35 | esquema `cafae` |
 | Migraciones | 8 | `001`–`008`, inmutables por SHA-256 |
-| Pruebas | 87 | `unittest`, 8 runners, base desechable `cafae_test_*` |
+| Pruebas | 90 | `unittest`, 8 runners, base desechable `cafae_test_*` |
 | UIs | 1 | React + Vite (ADR-005); Streamlit retirado el 28/10 |
 | Logging estructurado | 0 | sin `logging` en `cafae/`; 3 `print` |
 
@@ -120,8 +120,8 @@ flowchart LR
 | D-03 | Alto | SQL y lecturas dentro de routers | `routes_catalogos.py`; `routes_planillas.py:87`; `routes_documentos.py:22` | 3 |
 | D-04 | Alto | Respuestas armadas en dos transacciones ⇒ lectura inconsistente bajo edición concurrente | `routes_planillas.py:87-116`; `routes_documentos.py:21-34` | 3 |
 | D-05 | Resuelto | Los ocho endpoints de documentos exigen `generar_documentos`; `txt_bancario` además exige versión cerrada y D.5 habilitado. `CONSULTA` solo lee | `routes_documentos.py:21-22,69-211`; `tests/seguridad/test_documentos.py` | 28/10 |
-| D-06 | Parcial | Sobre de error uniforme (RFC 9457) con `code` estable y `409` para conflictos de revisión. Los 4 routers limpios ya delegan `UserError` al handler global; quedan `routes_catalogos`, `routes_reportes` y `routes_trabajadores` | `api/errors.py`; `api/main.py`; `tests/api/test_contrato.py` | 2 (cerrar en 3) |
-| D-07 | Alto | 62 endpoints en un archivo de 963 líneas | `routes_catalogos.py` | 3 |
+| D-06 | Resuelto (era Parcial) | Sobre de error uniforme (RFC 9457) con `code` estable, `403`/`401` para `AccessError`/`SessionError`, `409` para conflictos de revisión y `422` para validación. Ningún router captura `UserError`: los siete delegan en el handler global y una guardia AST lo verifica | `api/errors.py`; `api/main.py`; `tests/api/test_contrato.py` | 28/10 |
+| D-07 | Alto | 62 endpoints en un archivo de 992 líneas | `routes_catalogos.py` | 3 |
 | D-08 | Medio | Sin logging estructurado ni ID de correlación | `cafae/**` (0 loggers, 3 `print`) | 6 |
 | D-09 | Medio | CORS `*` con credenciales, innecesario en mismo origen | `main.py:52-58` | 4 |
 | D-10 | Resuelto (era Medio) | Contrato tipado en el cliente: `apiRequest<T>` sin `any`, `ApiError` sobre RFC 9457, `Pagina[T]` estándar y `usePaginacion`. Queda un `any` documentado en `ReportesView` porque los 9 reportes no tienen esquema propio | `frontend/src/api/`; `frontend/src/hooks/usePaginacion.ts` | 2 |
@@ -142,8 +142,10 @@ con `type`, `title`, `status`, `code`, `detail` e `instance`
 detectado en la base responde `409 CONFLICTO_REVISION` en vez de `500`, y
 `POST /api/planillas` devuelve la `revision_edicion` vigente. Los listados que
 crecen sin techo usan el sobre `Pagina[T]` (`GET /api/auditoria`) y el cliente
-ramifica por `code`. Pruebas: `python scripts/test_api.py` (18 casos, sin base
-de datos).
+ramifica por `code`. Ningún router de dominio captura `UserError`: se quitaron
+55 mapeos locales (48 en catálogos, 5 en trabajadores, 2 en reportes) y una
+guardia AST falla si reaparecen. Pruebas: `python scripts/test_api.py` (21
+casos, sin base de datos).
 
 **Retiro de Streamlit 28/10/2026.** Se ejecutó el plan de ADR-005: se
 eliminaron `app.py`, `cafae/ui/` y `.streamlit/`, la dependencia `streamlit`

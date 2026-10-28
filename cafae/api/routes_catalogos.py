@@ -6,7 +6,7 @@ from psycopg.errors import ForeignKeyViolation
 
 from cafae.api.deps import get_current_user, require_role
 from cafae.catalogos import CatalogoService
-from cafae.security import UserError, AccessError
+from cafae.security import UserError
 
 router = APIRouter(prefix='/catalogos', tags=['Catálogos'])
 catalogo_service = CatalogoService()
@@ -131,11 +131,8 @@ def create_nivel(
     req: NivelRequest,
     user: Annotated[dict, Depends(require_role('ADMINISTRADOR'))]
 ):
-    try:
-        new_id = catalogo_service.create_nivel(user['token'], req.nombre)
-        return {'ok': True, 'id': new_id, 'mensaje': 'Nivel educativo registrado con éxito.'}
-    except UserError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    new_id = catalogo_service.create_nivel(user['token'], req.nombre)
+    return {'ok': True, 'id': new_id, 'mensaje': 'Nivel educativo registrado con éxito.'}
 
 
 @router.put('/niveles/{item_id}')
@@ -145,11 +142,8 @@ def update_nivel(
     activo: bool = True,
     user: Annotated[dict, Depends(require_role('ADMINISTRADOR'))] = None
 ):
-    try:
-        catalogo_service.update_nivel(user['token'], item_id, req.nombre, activo)
-        return {'ok': True, 'mensaje': 'Nivel educativo actualizado con éxito.'}
-    except UserError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    catalogo_service.update_nivel(user['token'], item_id, req.nombre, activo)
+    return {'ok': True, 'mensaje': 'Nivel educativo actualizado con éxito.'}
 
 
 @router.patch('/niveles/{item_id}/estado')
@@ -162,15 +156,12 @@ def set_active_nivel(
     val_activo = activo if activo is not None else (body.activo if body else None)
     if val_activo is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='El campo "activo" es obligatorio.')
-    try:
-        token = user['token']
-        nivel = catalogo_service.get_nivel(token, item_id)
-        if not nivel:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Nivel educativo no encontrado.')
-        catalogo_service.update_nivel(token, item_id, nivel['nombre'], val_activo)
-        return {'ok': True, 'mensaje': f'Nivel {"activado" if val_activo else "desactivado"} con éxito.'}
-    except UserError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    token = user['token']
+    nivel = catalogo_service.get_nivel(token, item_id)
+    if not nivel:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Nivel educativo no encontrado.')
+    catalogo_service.update_nivel(token, item_id, nivel['nombre'], val_activo)
+    return {'ok': True, 'mensaje': f'Nivel {"activado" if val_activo else "desactivado"} con éxito.'}
 
 
 @router.delete('/niveles/{item_id}')
@@ -191,8 +182,6 @@ def delete_nivel(
             status_code=status.HTTP_409_CONFLICT,
             detail='No se puede eliminar el nivel educativo porque está asignado a instituciones educativas o trabajadores. Use la opción "Desactivar".'
         )
-    except UserError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
 
 # =============================================================================
@@ -215,25 +204,22 @@ def create_institucion(
     req: InstitucionRequest,
     user: Annotated[dict, Depends(require_role('ADMINISTRADOR'))]
 ):
-    try:
-        token = user['token']
-        nivel_id = req.nivel_id
-        if not nivel_id:
-            niveles = catalogo_service.list_niveles(token, solo_activos=True)
-            if niveles:
-                nivel_id = niveles[0]['id']
-            else:
-                raise UserError('No hay niveles educativos disponibles para asignar a la institución.')
+    token = user['token']
+    nivel_id = req.nivel_id
+    if not nivel_id:
+        niveles = catalogo_service.list_niveles(token, solo_activos=True)
+        if niveles:
+            nivel_id = niveles[0]['id']
+        else:
+            raise UserError('No hay niveles educativos disponibles para asignar a la institución.')
 
-        codigo_modular = req.codigo_modular or f"IE-{req.nombre[:10].strip().upper()}"
-        distrito = req.distrito or 'Chepén'
+    codigo_modular = req.codigo_modular or f"IE-{req.nombre[:10].strip().upper()}"
+    distrito = req.distrito or 'Chepén'
 
-        new_id = catalogo_service.create_institucion(
-            token, codigo_modular, req.nombre, nivel_id, distrito, req.meta_id, req.observaciones
-        )
-        return {'ok': True, 'id': new_id, 'mensaje': 'Institución registrada con éxito.'}
-    except UserError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    new_id = catalogo_service.create_institucion(
+        token, codigo_modular, req.nombre, nivel_id, distrito, req.meta_id, req.observaciones
+    )
+    return {'ok': True, 'id': new_id, 'mensaje': 'Institución registrada con éxito.'}
 
 
 @router.put('/instituciones/{item_id}')
@@ -243,25 +229,22 @@ def update_institucion(
     activo: bool = True,
     user: Annotated[dict, Depends(require_role('ADMINISTRADOR'))] = None
 ):
-    try:
-        token = user['token']
-        inst = catalogo_service.get_institucion(token, item_id)
-        if not inst:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Institución no encontrada.')
+    token = user['token']
+    inst = catalogo_service.get_institucion(token, item_id)
+    if not inst:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Institución no encontrada.')
 
-        codigo_modular = req.codigo_modular or inst['codigo_modular']
-        nombre = req.nombre or inst['nombre']
-        nivel_id = req.nivel_id or inst['nivel_id']
-        distrito = req.distrito or inst['distrito'] or 'Chepén'
-        meta_id = req.meta_id if req.meta_id is not None else inst.get('meta_id')
-        observaciones = req.observaciones if req.observaciones is not None else inst.get('observaciones')
+    codigo_modular = req.codigo_modular or inst['codigo_modular']
+    nombre = req.nombre or inst['nombre']
+    nivel_id = req.nivel_id or inst['nivel_id']
+    distrito = req.distrito or inst['distrito'] or 'Chepén'
+    meta_id = req.meta_id if req.meta_id is not None else inst.get('meta_id')
+    observaciones = req.observaciones if req.observaciones is not None else inst.get('observaciones')
 
-        catalogo_service.update_institucion(
-            token, item_id, codigo_modular, nombre, nivel_id, distrito, meta_id, observaciones, activo
-        )
-        return {'ok': True, 'mensaje': 'Institución actualizada con éxito.'}
-    except UserError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    catalogo_service.update_institucion(
+        token, item_id, codigo_modular, nombre, nivel_id, distrito, meta_id, observaciones, activo
+    )
+    return {'ok': True, 'mensaje': 'Institución actualizada con éxito.'}
 
 
 @router.patch('/instituciones/{item_id}/estado')
@@ -274,18 +257,15 @@ def set_active_institucion(
     val_activo = activo if activo is not None else (body.activo if body else None)
     if val_activo is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='El campo "activo" es obligatorio.')
-    try:
-        token = user['token']
-        inst = catalogo_service.get_institucion(token, item_id)
-        if not inst:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Institución no encontrada.')
-        catalogo_service.update_institucion(
-            token, item_id, inst['codigo_modular'], inst['nombre'], inst['nivel_id'],
-            inst['distrito'], inst.get('meta_id'), inst.get('observaciones'), val_activo
-        )
-        return {'ok': True, 'mensaje': f'Institución {"activada" if val_activo else "desactivada"} con éxito.'}
-    except UserError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    token = user['token']
+    inst = catalogo_service.get_institucion(token, item_id)
+    if not inst:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Institución no encontrada.')
+    catalogo_service.update_institucion(
+        token, item_id, inst['codigo_modular'], inst['nombre'], inst['nivel_id'],
+        inst['distrito'], inst.get('meta_id'), inst.get('observaciones'), val_activo
+    )
+    return {'ok': True, 'mensaje': f'Institución {"activada" if val_activo else "desactivada"} con éxito.'}
 
 
 @router.delete('/instituciones/{item_id}')
@@ -305,8 +285,6 @@ def delete_institucion(
             status_code=status.HTTP_409_CONFLICT,
             detail='No se puede eliminar la institución porque tiene trabajadores o registros de planillas vinculados. Utilice la opción "Desactivar".'
         )
-    except UserError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
 
 # =============================================================================
@@ -322,11 +300,8 @@ def create_area(
     req: AreaRequest,
     user: Annotated[dict, Depends(require_role('ADMINISTRADOR'))]
 ):
-    try:
-        new_id = catalogo_service.create_area_sede(user['token'], req.nombre, req.meta_id)
-        return {'ok': True, 'id': new_id, 'mensaje': 'Área creada exitosamente.'}
-    except UserError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    new_id = catalogo_service.create_area_sede(user['token'], req.nombre, req.meta_id)
+    return {'ok': True, 'id': new_id, 'mensaje': 'Área creada exitosamente.'}
 
 
 @router.put('/areas/{item_id}')
@@ -336,11 +311,8 @@ def update_area(
     activo: bool = True,
     user: Annotated[dict, Depends(require_role('ADMINISTRADOR'))] = None
 ):
-    try:
-        catalogo_service.update_area_sede(user['token'], item_id, req.nombre, req.meta_id, activo)
-        return {'ok': True, 'mensaje': 'Área actualizada exitosamente.'}
-    except UserError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    catalogo_service.update_area_sede(user['token'], item_id, req.nombre, req.meta_id, activo)
+    return {'ok': True, 'mensaje': 'Área actualizada exitosamente.'}
 
 
 @router.patch('/areas/{item_id}/estado')
@@ -353,15 +325,12 @@ def set_active_area(
     val_activo = activo if activo is not None else (body.activo if body else None)
     if val_activo is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='El campo "activo" es obligatorio.')
-    try:
-        token = user['token']
-        area = catalogo_service.get_area_sede(token, item_id)
-        if not area:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Área no encontrada.')
-        catalogo_service.update_area_sede(token, item_id, area['nombre'], area.get('meta_id'), val_activo)
-        return {'ok': True, 'mensaje': f'Área {"activada" if val_activo else "desactivada"} con éxito.'}
-    except UserError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    token = user['token']
+    area = catalogo_service.get_area_sede(token, item_id)
+    if not area:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Área no encontrada.')
+    catalogo_service.update_area_sede(token, item_id, area['nombre'], area.get('meta_id'), val_activo)
+    return {'ok': True, 'mensaje': f'Área {"activada" if val_activo else "desactivada"} con éxito.'}
 
 
 @router.delete('/areas/{item_id}')
@@ -381,8 +350,6 @@ def delete_area(
             status_code=status.HTTP_409_CONFLICT,
             detail='No se puede eliminar el área porque está vinculada a trabajadores o planillas históricas. Por seguridad, use la opción "Desactivar".'
         )
-    except UserError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
 
 # =============================================================================
@@ -398,13 +365,10 @@ def create_meta(
     req: MetaRequest,
     user: Annotated[dict, Depends(require_role('ADMINISTRADOR'))]
 ):
-    try:
-        new_id = catalogo_service.create_meta(
-            user['token'], req.codigo, req.descripcion or req.codigo, req.programa_id, req.partida_id
-        )
-        return {'ok': True, 'id': new_id, 'mensaje': 'Meta registrada con éxito.'}
-    except UserError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    new_id = catalogo_service.create_meta(
+        user['token'], req.codigo, req.descripcion or req.codigo, req.programa_id, req.partida_id
+    )
+    return {'ok': True, 'id': new_id, 'mensaje': 'Meta registrada con éxito.'}
 
 
 @router.put('/metas/{item_id}')
@@ -414,21 +378,18 @@ def update_meta(
     activo: bool = True,
     user: Annotated[dict, Depends(require_role('ADMINISTRADOR'))] = None,
 ):
-    try:
-        token = user['token']
-        meta = catalogo_service.get_meta(token, item_id)
-        if not meta:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Meta no encontrada.')
+    token = user['token']
+    meta = catalogo_service.get_meta(token, item_id)
+    if not meta:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Meta no encontrada.')
 
-        programa_id = req.programa_id if req.programa_id is not None else meta.get('programa_id')
-        partida_id = req.partida_id if req.partida_id is not None else meta.get('partida_id')
+    programa_id = req.programa_id if req.programa_id is not None else meta.get('programa_id')
+    partida_id = req.partida_id if req.partida_id is not None else meta.get('partida_id')
 
-        catalogo_service.update_meta(
-            token, item_id, req.codigo, req.descripcion or req.codigo, programa_id, partida_id, activo
-        )
-        return {'ok': True, 'mensaje': 'Meta actualizada con éxito.'}
-    except UserError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    catalogo_service.update_meta(
+        token, item_id, req.codigo, req.descripcion or req.codigo, programa_id, partida_id, activo
+    )
+    return {'ok': True, 'mensaje': 'Meta actualizada con éxito.'}
 
 
 @router.patch('/metas/{item_id}/estado')
@@ -441,17 +402,14 @@ def set_active_meta(
     val_activo = activo if activo is not None else (body.activo if body else None)
     if val_activo is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='El campo "activo" es obligatorio.')
-    try:
-        token = user['token']
-        meta = catalogo_service.get_meta(token, item_id)
-        if not meta:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Meta no encontrada.')
-        catalogo_service.update_meta(
-            token, item_id, meta['codigo'], meta['descripcion'], meta.get('programa_id'), meta.get('partida_id'), val_activo
-        )
-        return {'ok': True, 'mensaje': f'Meta {"activada" if val_activo else "desactivada"} con éxito.'}
-    except UserError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    token = user['token']
+    meta = catalogo_service.get_meta(token, item_id)
+    if not meta:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Meta no encontrada.')
+    catalogo_service.update_meta(
+        token, item_id, meta['codigo'], meta['descripcion'], meta.get('programa_id'), meta.get('partida_id'), val_activo
+    )
+    return {'ok': True, 'mensaje': f'Meta {"activada" if val_activo else "desactivada"} con éxito.'}
 
 
 @router.delete('/metas/{item_id}')
@@ -473,8 +431,6 @@ def delete_meta(
             status_code=status.HTTP_409_CONFLICT,
             detail='No se puede eliminar la meta porque está asignada a instituciones educativas, áreas o planillas. Desvincúlela primero o use la opción "Desactivar".'
         )
-    except UserError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
 
 # =============================================================================
@@ -494,13 +450,10 @@ def create_firma(
     cargo = req.cargo or req.cargo_firmante
     if not nombre or not cargo:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Nombre y cargo de la firma son obligatorios.')
-    try:
-        new_id = catalogo_service.create_firma(
-            user['token'], nombre, cargo
-        )
-        return {'ok': True, 'id': new_id, 'mensaje': 'Firma registrada con éxito.'}
-    except UserError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    new_id = catalogo_service.create_firma(
+        user['token'], nombre, cargo
+    )
+    return {'ok': True, 'id': new_id, 'mensaje': 'Firma registrada con éxito.'}
 
 
 @router.put('/firmas/{item_id}')
@@ -514,13 +467,10 @@ def update_firma(
     cargo = req.cargo or req.cargo_firmante
     if not nombre or not cargo:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Nombre y cargo de la firma son obligatorios.')
-    try:
-        catalogo_service.update_firma(
-            user['token'], item_id, nombre, cargo, activo
-        )
-        return {'ok': True, 'mensaje': 'Firma actualizada con éxito.'}
-    except UserError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    catalogo_service.update_firma(
+        user['token'], item_id, nombre, cargo, activo
+    )
+    return {'ok': True, 'mensaje': 'Firma actualizada con éxito.'}
 
 
 @router.patch('/firmas/{item_id}/estado')
@@ -533,16 +483,13 @@ def set_active_firma(
     val_activo = activo if activo is not None else (body.activo if body else None)
     if val_activo is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='El campo "activo" es obligatorio.')
-    try:
-        token = user['token']
-        firmas = catalogo_service.list_firmas(token, solo_activas=False)
-        target = next((f for f in firmas if f['id'] == item_id), None)
-        if not target:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Firma no encontrada.')
-        catalogo_service.update_firma(token, item_id, target['nombre_completo'], target['cargo'], val_activo)
-        return {'ok': True, 'mensaje': f'Firma {"activada" if val_activo else "desactivada"} con éxito.'}
-    except UserError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    token = user['token']
+    firmas = catalogo_service.list_firmas(token, solo_activas=False)
+    target = next((f for f in firmas if f['id'] == item_id), None)
+    if not target:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Firma no encontrada.')
+    catalogo_service.update_firma(token, item_id, target['nombre_completo'], target['cargo'], val_activo)
+    return {'ok': True, 'mensaje': f'Firma {"activada" if val_activo else "desactivada"} con éxito.'}
 
 
 @router.delete('/firmas/{item_id}')
@@ -562,8 +509,6 @@ def delete_firma(
             status_code=status.HTTP_409_CONFLICT,
             detail='No se puede eliminar la firma porque está asociada a planillas o documentos históricos. Use la opción "Desactivar".'
         )
-    except UserError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
 
 # =============================================================================
@@ -579,13 +524,10 @@ def create_programa(
     req: ProgramaRequest,
     user: Annotated[dict, Depends(require_role('ADMINISTRADOR'))]
 ):
-    try:
-        new_id = catalogo_service.create_programa(
-            user['token'], req.codigo, req.nombre, orden=req.orden or 0, padre_id=req.padre_id
-        )
-        return {'ok': True, 'id': new_id, 'mensaje': 'Programa registrado con éxito.'}
-    except UserError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    new_id = catalogo_service.create_programa(
+        user['token'], req.codigo, req.nombre, orden=req.orden or 0, padre_id=req.padre_id
+    )
+    return {'ok': True, 'id': new_id, 'mensaje': 'Programa registrado con éxito.'}
 
 
 @router.put('/programas/{item_id}')
@@ -595,13 +537,10 @@ def update_programa(
     activo: bool = True,
     user: Annotated[dict, Depends(require_role('ADMINISTRADOR'))] = None
 ):
-    try:
-        catalogo_service.update_programa(
-            user['token'], item_id, req.codigo, req.nombre, req.orden or 0, req.padre_id, activo
-        )
-        return {'ok': True, 'mensaje': 'Programa actualizado con éxito.'}
-    except UserError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    catalogo_service.update_programa(
+        user['token'], item_id, req.codigo, req.nombre, req.orden or 0, req.padre_id, activo
+    )
+    return {'ok': True, 'mensaje': 'Programa actualizado con éxito.'}
 
 
 @router.patch('/programas/{item_id}/estado')
@@ -614,18 +553,15 @@ def set_active_programa(
     val_activo = activo if activo is not None else (body.activo if body else None)
     if val_activo is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='El campo "activo" es obligatorio.')
-    try:
-        token = user['token']
-        progs = catalogo_service.list_programas(token, solo_activos=False)
-        target = next((p for p in progs if p['id'] == item_id), None)
-        if not target:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Programa no encontrado.')
-        catalogo_service.update_programa(
-            token, item_id, target['codigo'], target['nombre'], target['orden'], target['padre_id'], val_activo
-        )
-        return {'ok': True, 'mensaje': f'Programa {"activado" if val_activo else "desactivado"} con éxito.'}
-    except UserError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    token = user['token']
+    progs = catalogo_service.list_programas(token, solo_activos=False)
+    target = next((p for p in progs if p['id'] == item_id), None)
+    if not target:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Programa no encontrado.')
+    catalogo_service.update_programa(
+        token, item_id, target['codigo'], target['nombre'], target['orden'], target['padre_id'], val_activo
+    )
+    return {'ok': True, 'mensaje': f'Programa {"activado" if val_activo else "desactivado"} con éxito.'}
 
 
 @router.delete('/programas/{item_id}')
@@ -645,8 +581,6 @@ def delete_programa(
             status_code=status.HTTP_409_CONFLICT,
             detail='No se puede eliminar el programa porque tiene subprogramas o metas asignadas. Use la opción "Desactivar".'
         )
-    except UserError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
 
 # =============================================================================
@@ -662,11 +596,8 @@ def create_partida(
     req: PartidaRequest,
     user: Annotated[dict, Depends(require_role('ADMINISTRADOR'))]
 ):
-    try:
-        new_id = catalogo_service.create_partida(user['token'], req.codigo, req.descripcion)
-        return {'ok': True, 'id': new_id, 'mensaje': 'Partida registrada con éxito.'}
-    except UserError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    new_id = catalogo_service.create_partida(user['token'], req.codigo, req.descripcion)
+    return {'ok': True, 'id': new_id, 'mensaje': 'Partida registrada con éxito.'}
 
 
 @router.put('/partidas/{item_id}')
@@ -676,11 +607,8 @@ def update_partida(
     activo: bool = True,
     user: Annotated[dict, Depends(require_role('ADMINISTRADOR'))] = None
 ):
-    try:
-        catalogo_service.update_partida(user['token'], item_id, req.codigo, req.descripcion, activo)
-        return {'ok': True, 'mensaje': 'Partida actualizada con éxito.'}
-    except UserError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    catalogo_service.update_partida(user['token'], item_id, req.codigo, req.descripcion, activo)
+    return {'ok': True, 'mensaje': 'Partida actualizada con éxito.'}
 
 
 @router.patch('/partidas/{item_id}/estado')
@@ -693,15 +621,12 @@ def set_active_partida(
     val_activo = activo if activo is not None else (body.activo if body else None)
     if val_activo is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='El campo "activo" es obligatorio.')
-    try:
-        token = user['token']
-        target = catalogo_service.get_partida(token, item_id)
-        if not target:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Partida no encontrada.')
-        catalogo_service.update_partida(token, item_id, target['codigo'], target['descripcion'], val_activo)
-        return {'ok': True, 'mensaje': f'Partida {"activada" if val_activo else "desactivada"} con éxito.'}
-    except UserError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    token = user['token']
+    target = catalogo_service.get_partida(token, item_id)
+    if not target:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Partida no encontrada.')
+    catalogo_service.update_partida(token, item_id, target['codigo'], target['descripcion'], val_activo)
+    return {'ok': True, 'mensaje': f'Partida {"activada" if val_activo else "desactivada"} con éxito.'}
 
 
 @router.delete('/partidas/{item_id}')
@@ -721,8 +646,6 @@ def delete_partida(
             status_code=status.HTTP_409_CONFLICT,
             detail='No se puede eliminar la partida porque está vinculada a metas presupuestarias. Use la opción "Desactivar".'
         )
-    except UserError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
 
 # =============================================================================
@@ -738,11 +661,8 @@ def create_cargo(
     req: CargoRequest,
     user: Annotated[dict, Depends(require_role('ADMINISTRADOR'))]
 ):
-    try:
-        new_id = catalogo_service.create_cargo(user['token'], req.nombre)
-        return {'ok': True, 'id': new_id, 'mensaje': 'Cargo registrado con éxito.'}
-    except UserError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    new_id = catalogo_service.create_cargo(user['token'], req.nombre)
+    return {'ok': True, 'id': new_id, 'mensaje': 'Cargo registrado con éxito.'}
 
 
 @router.put('/cargos/{item_id}')
@@ -752,11 +672,8 @@ def update_cargo(
     activo: bool = True,
     user: Annotated[dict, Depends(require_role('ADMINISTRADOR'))] = None
 ):
-    try:
-        catalogo_service.update_cargo(user['token'], item_id, req.nombre, activo)
-        return {'ok': True, 'mensaje': 'Cargo actualizado con éxito.'}
-    except UserError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    catalogo_service.update_cargo(user['token'], item_id, req.nombre, activo)
+    return {'ok': True, 'mensaje': 'Cargo actualizado con éxito.'}
 
 
 @router.patch('/cargos/{item_id}/estado')
@@ -769,16 +686,13 @@ def set_active_cargo(
     val_activo = activo if activo is not None else (body.activo if body else None)
     if val_activo is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='El campo "activo" es obligatorio.')
-    try:
-        token = user['token']
-        cargos = catalogo_service.list_cargos(token, solo_activos=False)
-        target = next((c for c in cargos if c['id'] == item_id), None)
-        if not target:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Cargo no encontrado.')
-        catalogo_service.update_cargo(token, item_id, target['nombre'], val_activo)
-        return {'ok': True, 'mensaje': f'Cargo {"activado" if val_activo else "desactivado"} con éxito.'}
-    except UserError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    token = user['token']
+    cargos = catalogo_service.list_cargos(token, solo_activos=False)
+    target = next((c for c in cargos if c['id'] == item_id), None)
+    if not target:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Cargo no encontrado.')
+    catalogo_service.update_cargo(token, item_id, target['nombre'], val_activo)
+    return {'ok': True, 'mensaje': f'Cargo {"activado" if val_activo else "desactivado"} con éxito.'}
 
 
 @router.delete('/cargos/{item_id}')
@@ -798,8 +712,6 @@ def delete_cargo(
             status_code=status.HTTP_409_CONFLICT,
             detail='No se puede eliminar el cargo porque está asignado a trabajadores. Use la opción "Desactivar".'
         )
-    except UserError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
 
 # =============================================================================
@@ -815,11 +727,8 @@ def create_categoria(
     req: CategoriaRequest,
     user: Annotated[dict, Depends(require_role('ADMINISTRADOR'))]
 ):
-    try:
-        new_id = catalogo_service.create_categoria(user['token'], req.codigo, req.descripcion)
-        return {'ok': True, 'id': new_id, 'mensaje': 'Categoría registrada con éxito.'}
-    except UserError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    new_id = catalogo_service.create_categoria(user['token'], req.codigo, req.descripcion)
+    return {'ok': True, 'id': new_id, 'mensaje': 'Categoría registrada con éxito.'}
 
 
 @router.put('/categorias/{item_id}')
@@ -829,11 +738,8 @@ def update_categoria(
     activo: bool = True,
     user: Annotated[dict, Depends(require_role('ADMINISTRADOR'))] = None
 ):
-    try:
-        catalogo_service.update_categoria(user['token'], item_id, req.codigo, req.descripcion, activo)
-        return {'ok': True, 'mensaje': 'Categoría actualizada con éxito.'}
-    except UserError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    catalogo_service.update_categoria(user['token'], item_id, req.codigo, req.descripcion, activo)
+    return {'ok': True, 'mensaje': 'Categoría actualizada con éxito.'}
 
 
 @router.patch('/categorias/{item_id}/estado')
@@ -846,16 +752,13 @@ def set_active_categoria(
     val_activo = activo if activo is not None else (body.activo if body else None)
     if val_activo is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='El campo "activo" es obligatorio.')
-    try:
-        token = user['token']
-        cats = catalogo_service.list_categorias(token, solo_activas=False)
-        target = next((c for c in cats if c['id'] == item_id), None)
-        if not target:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Categoría no encontrada.')
-        catalogo_service.update_categoria(token, item_id, target['codigo'], target['descripcion'], val_activo)
-        return {'ok': True, 'mensaje': f'Categoría {"activada" if val_activo else "desactivada"} con éxito.'}
-    except UserError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    token = user['token']
+    cats = catalogo_service.list_categorias(token, solo_activas=False)
+    target = next((c for c in cats if c['id'] == item_id), None)
+    if not target:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Categoría no encontrada.')
+    catalogo_service.update_categoria(token, item_id, target['codigo'], target['descripcion'], val_activo)
+    return {'ok': True, 'mensaje': f'Categoría {"activada" if val_activo else "desactivada"} con éxito.'}
 
 
 @router.delete('/categorias/{item_id}')
@@ -875,8 +778,6 @@ def delete_categoria(
             status_code=status.HTTP_409_CONFLICT,
             detail='No se puede eliminar la categoría porque está asignada a trabajadores. Use la opción "Desactivar".'
         )
-    except UserError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
 
 # =============================================================================
@@ -892,11 +793,8 @@ def create_situacion(
     req: SituacionRequest,
     user: Annotated[dict, Depends(require_role('ADMINISTRADOR'))]
 ):
-    try:
-        new_id = catalogo_service.create_situacion(user['token'], req.nombre)
-        return {'ok': True, 'id': new_id, 'mensaje': 'Situación laboral registrada con éxito.'}
-    except UserError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    new_id = catalogo_service.create_situacion(user['token'], req.nombre)
+    return {'ok': True, 'id': new_id, 'mensaje': 'Situación laboral registrada con éxito.'}
 
 
 @router.put('/situaciones/{item_id}')
@@ -906,11 +804,8 @@ def update_situacion(
     activo: bool = True,
     user: Annotated[dict, Depends(require_role('ADMINISTRADOR'))] = None
 ):
-    try:
-        catalogo_service.update_situacion(user['token'], item_id, req.nombre, activo)
-        return {'ok': True, 'mensaje': 'Situación laboral actualizada con éxito.'}
-    except UserError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    catalogo_service.update_situacion(user['token'], item_id, req.nombre, activo)
+    return {'ok': True, 'mensaje': 'Situación laboral actualizada con éxito.'}
 
 
 @router.patch('/situaciones/{item_id}/estado')
@@ -923,16 +818,13 @@ def set_active_situacion(
     val_activo = activo if activo is not None else (body.activo if body else None)
     if val_activo is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='El campo "activo" es obligatorio.')
-    try:
-        token = user['token']
-        sits = catalogo_service.list_situaciones(token, solo_activas=False)
-        target = next((s for s in sits if s['id'] == item_id), None)
-        if not target:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Situación no encontrada.')
-        catalogo_service.update_situacion(token, item_id, target['nombre'], val_activo)
-        return {'ok': True, 'mensaje': f'Situación {"activada" if val_activo else "desactivada"} con éxito.'}
-    except UserError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    token = user['token']
+    sits = catalogo_service.list_situaciones(token, solo_activas=False)
+    target = next((s for s in sits if s['id'] == item_id), None)
+    if not target:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Situación no encontrada.')
+    catalogo_service.update_situacion(token, item_id, target['nombre'], val_activo)
+    return {'ok': True, 'mensaje': f'Situación {"activada" if val_activo else "desactivada"} con éxito.'}
 
 
 @router.delete('/situaciones/{item_id}')
@@ -952,8 +844,6 @@ def delete_situacion(
             status_code=status.HTTP_409_CONFLICT,
             detail='No se puede eliminar la situación porque está asignada a trabajadores. Use la opción "Desactivar".'
         )
-    except UserError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
 
 # =============================================================================
@@ -969,11 +859,8 @@ def create_subtipo(
     req: SubtipoRequest,
     user: Annotated[dict, Depends(require_role('ADMINISTRADOR'))]
 ):
-    try:
-        new_id = catalogo_service.create_subtipo(user['token'], req.nombre)
-        return {'ok': True, 'id': new_id, 'mensaje': 'Subtipo de trabajador registrado con éxito.'}
-    except UserError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    new_id = catalogo_service.create_subtipo(user['token'], req.nombre)
+    return {'ok': True, 'id': new_id, 'mensaje': 'Subtipo de trabajador registrado con éxito.'}
 
 
 @router.put('/subtipos/{item_id}')
@@ -983,11 +870,8 @@ def update_subtipo(
     activo: bool = True,
     user: Annotated[dict, Depends(require_role('ADMINISTRADOR'))] = None
 ):
-    try:
-        catalogo_service.update_subtipo(user['token'], item_id, req.nombre, activo)
-        return {'ok': True, 'mensaje': 'Subtipo actualizado con éxito.'}
-    except UserError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    catalogo_service.update_subtipo(user['token'], item_id, req.nombre, activo)
+    return {'ok': True, 'mensaje': 'Subtipo actualizado con éxito.'}
 
 
 @router.patch('/subtipos/{item_id}/estado')
@@ -1000,16 +884,13 @@ def set_active_subtipo(
     val_activo = activo if activo is not None else (body.activo if body else None)
     if val_activo is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='El campo "activo" es obligatorio.')
-    try:
-        token = user['token']
-        subs = catalogo_service.list_subtipos(token, solo_activos=False)
-        target = next((s for s in subs if s['id'] == item_id), None)
-        if not target:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Subtipo no encontrado.')
-        catalogo_service.update_subtipo(token, item_id, target['nombre'], val_activo)
-        return {'ok': True, 'mensaje': f'Subtipo {"activado" if val_activo else "desactivado"} con éxito.'}
-    except UserError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    token = user['token']
+    subs = catalogo_service.list_subtipos(token, solo_activos=False)
+    target = next((s for s in subs if s['id'] == item_id), None)
+    if not target:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Subtipo no encontrado.')
+    catalogo_service.update_subtipo(token, item_id, target['nombre'], val_activo)
+    return {'ok': True, 'mensaje': f'Subtipo {"activado" if val_activo else "desactivado"} con éxito.'}
 
 
 @router.delete('/subtipos/{item_id}')
@@ -1029,8 +910,6 @@ def delete_subtipo(
             status_code=status.HTTP_409_CONFLICT,
             detail='No se puede eliminar el subtipo porque está asignado a trabajadores. Use la opción "Desactivar".'
         )
-    except UserError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
 
 # =============================================================================
@@ -1046,13 +925,10 @@ def update_configuracion(
     req: ConfiguracionRequest,
     user: Annotated[dict, Depends(require_role('ADMINISTRADOR'))]
 ):
-    try:
-        catalogo_service.update_configuracion(
-            user['token'], req.nombre_institucion, req.nombre_sistema, req.zona_horaria
-        )
-        return {'ok': True, 'mensaje': 'Configuración institucional actualizada con éxito.'}
-    except UserError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    catalogo_service.update_configuracion(
+        user['token'], req.nombre_institucion, req.nombre_sistema, req.zona_horaria
+    )
+    return {'ok': True, 'mensaje': 'Configuración institucional actualizada con éxito.'}
 
 
 # =============================================================================
@@ -1072,18 +948,15 @@ def create_tipo_descuento(
     req: TipoDescuentoRequest,
     user: Annotated[dict, Depends(require_role('ADMINISTRADOR'))]
 ):
-    try:
-        new_id = catalogo_service.create_tipo_descuento(
-            user['token'],
-            codigo=req.codigo or req.nombre,
-            nombre=req.nombre,
-            orden=req.orden,
-            aplica_iiee=req.aplica_iiee if req.aplica_iiee is not None else True,
-            aplica_sede=req.aplica_sede if req.aplica_sede is not None else True,
-        )
-        return {'ok': True, 'id': new_id, 'mensaje': 'Tipo de descuento registrado con éxito.'}
-    except UserError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    new_id = catalogo_service.create_tipo_descuento(
+        user['token'],
+        codigo=req.codigo or req.nombre,
+        nombre=req.nombre,
+        orden=req.orden,
+        aplica_iiee=req.aplica_iiee if req.aplica_iiee is not None else True,
+        aplica_sede=req.aplica_sede if req.aplica_sede is not None else True,
+    )
+    return {'ok': True, 'id': new_id, 'mensaje': 'Tipo de descuento registrado con éxito.'}
 
 
 @router.put('/tipos-descuento/{item_id}')
@@ -1092,19 +965,16 @@ def update_tipo_descuento(
     req: TipoDescuentoRequest,
     user: Annotated[dict, Depends(require_role('ADMINISTRADOR'))]
 ):
-    try:
-        catalogo_service.update_tipo_descuento(
-            user['token'],
-            tipo_id=item_id,
-            nombre=req.nombre,
-            orden=req.orden or 1,
-            aplica_iiee=req.aplica_iiee if req.aplica_iiee is not None else True,
-            aplica_sede=req.aplica_sede if req.aplica_sede is not None else True,
-            activo=req.activo if req.activo is not None else True,
-        )
-        return {'ok': True, 'mensaje': 'Tipo de descuento actualizado con éxito.'}
-    except UserError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    catalogo_service.update_tipo_descuento(
+        user['token'],
+        tipo_id=item_id,
+        nombre=req.nombre,
+        orden=req.orden or 1,
+        aplica_iiee=req.aplica_iiee if req.aplica_iiee is not None else True,
+        aplica_sede=req.aplica_sede if req.aplica_sede is not None else True,
+        activo=req.activo if req.activo is not None else True,
+    )
+    return {'ok': True, 'mensaje': 'Tipo de descuento actualizado con éxito.'}
 
 
 @router.patch('/tipos-descuento/{item_id}/estado')
@@ -1115,11 +985,8 @@ def set_active_tipo_descuento(
     activo: Optional[bool] = Query(None)
 ):
     val_activo = activo if activo is not None else (body.activo if body else None)
-    try:
-        token = user['token']
-        nuevo = catalogo_service.toggle_tipo_descuento(token, item_id, val_activo)
-        return {'ok': True, 'activo': nuevo, 'mensaje': f'Tipo de descuento {"activado" if nuevo else "desactivado"} con éxito.'}
-    except UserError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    token = user['token']
+    nuevo = catalogo_service.toggle_tipo_descuento(token, item_id, val_activo)
+    return {'ok': True, 'activo': nuevo, 'mensaje': f'Tipo de descuento {"activado" if nuevo else "desactivado"} con éxito.'}
 
 
