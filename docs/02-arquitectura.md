@@ -97,7 +97,7 @@ capa HTTP.
 | Endpoints | 99 | catálogos 62 · documentos 8 · planillas 7 · trabajadores 5 · auth 4 · users 4 · importaciones 4 · auditoría 2 · reportes 2 · health 1 |
 | Tablas | 35 | esquema `cafae` |
 | Migraciones | 8 | `001`–`008`, inmutables por SHA-256 |
-| Pruebas | 106 | `unittest`, 8 runners, base desechable `cafae_test_*` |
+| Pruebas | 107 | `unittest`, 8 runners, base desechable `cafae_test_*` |
 | UIs | 1 | React + Vite (ADR-005); Streamlit retirado el 28/10 |
 | Logging estructurado | 0 | sin `logging` en `cafae/`; 3 `print` |
 
@@ -123,7 +123,7 @@ capa HTTP.
 | D-04 | Resuelto (era Alto) | Cabecera, firmas y líneas de una versión salen de una sola transacción: `get_version_completa` y `get_linea_con_version`. Antes se armaban con dos y tres lecturas y podían mezclar revisiones | `cafae/planillas.py`; `routes_planillas.py`; `routes_documentos.py` | 28/10 |
 | D-05 | Resuelto | Los ocho endpoints de documentos exigen `generar_documentos`; `txt_bancario` además exige versión cerrada y D.5 habilitado. `CONSULTA` solo lee | `routes_documentos.py:21-22,69-211`; `tests/seguridad/test_documentos.py` | 28/10 |
 | D-06 | Resuelto (era Parcial) | Sobre de error uniforme (RFC 9457) con `code` estable, `403`/`401` para `AccessError`/`SessionError`, `409` para conflictos de revisión y `422` para validación. Ningún router captura `UserError`: los siete delegan en el handler global y una guardia AST lo verifica | `api/errors.py`; `api/main.py`; `tests/api/test_contrato.py` | 28/10 |
-| D-07 | Alto | 62 endpoints en un archivo de 879 líneas | `routes_catalogos.py` | 3 |
+| D-07 | Resuelto (era Alto) | Los 62 endpoints de catálogos viven en un paquete por grupo (`bundle`, `institucional`, `presupuesto`, `personal`, `firmas`, `configuracion` + `_base` con modelos y servicio); el módulo más grande baja a 295 líneas y una prueba fija las 62 operaciones en OpenAPI | `cafae/api/routes_catalogos/` | 28/10 |
 | D-08 | Medio | Sin logging estructurado ni ID de correlación | `cafae/**` (0 loggers, 3 `print`) | 6 |
 | D-09 | Medio | CORS `*` con credenciales, innecesario en mismo origen | `main.py:52-58` | 4 |
 | D-10 | Resuelto (era Medio) | Contrato tipado en el cliente: `apiRequest<T>` sin `any`, `ApiError` sobre RFC 9457, `Pagina[T]` estándar y `usePaginacion`. Queda un `any` documentado en `ReportesView` porque los 9 reportes no tienen esquema propio | `frontend/src/api/`; `frontend/src/hooks/usePaginacion.ts` | 2 |
@@ -170,6 +170,17 @@ catálogo con dependencias ya no comparte código con un rechazo de validación.
 `routes_catalogos.py` bajó de 992 a 879 líneas y quedó libre de psycopg; la
 guardia `SinSqlEnRouters` ahora también lo cubre. Pruebas: 106 en total, con
 cuatro casos nuevos de borrado contra PostgreSQL.
+
+**Catálogos partidos por grupo 28/10/2026.** Ese mismo archivo se convirtió en
+el paquete `cafae/api/routes_catalogos/`: `_base.py` reúne los modelos de
+entrada y la instancia del servicio, y los endpoints se agrupan en `bundle`,
+`institucional`, `presupuesto`, `personal`, `firmas` y `configuracion`. El
+prefijo `/catalogos` se aplica una sola vez en `__init__.py`, que también
+reexporta las rutas históricas. El módulo más grande es `institucional.py` con
+295 líneas. No cambió ningún path ni método: 62 operaciones antes y después, y
+una prueba las fija contra el esquema OpenAPI para que una mudanza futura no
+pierda endpoints en silencio. La guardia de SQL ahora recorre todos los
+archivos del paquete, no solo su `__init__`. Pruebas: 107.
 
 **Retiro de Streamlit 28/10/2026.** Se ejecutó el plan de ADR-005: se
 eliminaron `app.py`, `cafae/ui/` y `.streamlit/`, la dependencia `streamlit`

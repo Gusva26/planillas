@@ -251,6 +251,22 @@ class EsquemaOpenAPI(unittest.TestCase):
                 revision_edicion=0,
             )
 
+    def test_los_62_endpoints_de_catalogos_siguen_registrados(self):
+        """D-07: partir el archivo en un paquete no pierde ni duplica rutas."""
+        operaciones = [
+            (metodo.upper(), ruta)
+            for ruta, metodos in self.spec['paths'].items()
+            if ruta.startswith('/api/catalogos')
+            for metodo in metodos
+        ]
+
+        self.assertEqual(len(operaciones), 62)
+        self.assertEqual(
+            {metodo: sum(1 for m, _ in operaciones if m == metodo)
+             for metodo, _ in operaciones},
+            {'GET': 14, 'POST': 12, 'PUT': 13, 'PATCH': 12, 'DELETE': 11},
+        )
+
     def test_respuesta_de_creacion_serializa_la_revision(self):
         respuesta = RespuestaCreacionPlanilla(
             planilla=PlanillaCreada(
@@ -335,28 +351,37 @@ class ManejoDeErroresEnRutas(unittest.TestCase):
 class SinSqlEnRouters(unittest.TestCase):
     """D-03: el SQL vive en los servicios, no en los routers.
 
-    Cubre los tres routers que llegaron a tener SQL inline. Si aparece un
-    `conn.execute` o un `data_transaction` en la capa HTTP, la prueba falla.
+    Cubre los tres routers que llegaron a tener SQL inline, incluidos los
+    módulos del paquete `routes_catalogos`. Si aparece un `conn.execute` o un
+    `data_transaction` en la capa HTTP, la prueba falla.
     """
 
     RUTAS = ['routes_catalogos', 'routes_planillas', 'routes_documentos']
 
+    @staticmethod
+    def _archivos(nombre):
+        """Un módulo suelto o todos los archivos de un paquete de rutas."""
+        ruta = Path(inspect.getfile(importlib.import_module(f'cafae.api.{nombre}')))
+        if ruta.name == '__init__.py':
+            return sorted(ruta.parent.glob('*.py'))
+        return [ruta]
+
     def test_los_routers_migrados_no_ejecutan_sql_ni_abren_transacciones(self):
         for nombre in self.RUTAS:
-            with self.subTest(router=nombre):
-                modulo = importlib.import_module(f'cafae.api.{nombre}')
-                arbol = ast.parse(Path(inspect.getfile(modulo)).read_text(encoding='utf-8'))
-                ejecuciones = [
-                    nodo.func.attr
-                    for nodo in ast.walk(arbol)
-                    if isinstance(nodo, ast.Call)
-                    and isinstance(nodo.func, ast.Attribute)
-                    and nodo.func.attr in ('execute', 'data_transaction')
-                ]
-                self.assertEqual(
-                    ejecuciones, [],
-                    f'{nombre} todavía accede a la base: moverlo al servicio.',
-                )
+            for ruta in self._archivos(nombre):
+                with self.subTest(router=nombre, archivo=ruta.name):
+                    arbol = ast.parse(ruta.read_text(encoding='utf-8'))
+                    ejecuciones = [
+                        nodo.func.attr
+                        for nodo in ast.walk(arbol)
+                        if isinstance(nodo, ast.Call)
+                        and isinstance(nodo.func, ast.Attribute)
+                        and nodo.func.attr in ('execute', 'data_transaction')
+                    ]
+                    self.assertEqual(
+                        ejecuciones, [],
+                        f'{ruta.name} todavía accede a la base: moverlo al servicio.',
+                    )
 
 
 class RoutersDeleganEnElServicio(unittest.TestCase):
