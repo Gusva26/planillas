@@ -114,6 +114,8 @@ cd frontend; npm run build                    # tsc + vite build -> dist/
 - El TXT bancario permanece bloqueado (D.5): el endpoint exige `txt_bancario`,
   solo opera sobre versiones `CERRADA` y responde `403` salvo
   `CAFAE_TXT_BANCARIO=1`.
+- Todos los documentos oficiales (PDF, Excel, remuneraciones, boletas,
+  cuadernillo) exigen `generar_documentos`; `CONSULTA` solo lee (ADR-006).
 
 ## Trampas conocidas
 
