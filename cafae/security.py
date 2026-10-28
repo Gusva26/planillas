@@ -10,6 +10,10 @@ class UserError(Exception):
     """Error esperado cuyo texto puede mostrarse al usuario."""
 
 
+class NoEncontrado(UserError):
+    """El recurso pedido no existe; el API lo traduce a `404 NO_ENCONTRADO`."""
+
+
 class AccessError(UserError):
     pass
 

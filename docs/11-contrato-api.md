@@ -45,7 +45,7 @@ Toda respuesta `4xx`/`5xx` usa `application/problem+json` (RFC 9457):
 | `SOLICITUD_INVALIDA` | 400 | Regla de negocio rechazó la operación (`UserError`) |
 | `NO_AUTENTICADO` | 401 | Token ausente, vencido o revocado |
 | `SIN_PERMISO` | 403 | El rol no tiene el permiso requerido |
-| `NO_ENCONTRADO` | 404 | Recurso inexistente |
+| `NO_ENCONTRADO` | 404 | Recurso inexistente (`NoEncontrado` en el servicio) |
 | `CONFLICTO_REVISION` | 409 | Otro usuario movió `revision_edicion` |
 | `CONFLICTO_ESTADO` | 409 | Estado incompatible (por ejemplo, versión ya cerrada) |
 | `VALIDACION` | 422 | Campos inválidos o faltantes |
@@ -110,6 +110,14 @@ Consecuencias contractuales:
    `409 CONFLICTO_REVISION`. El cliente debe recargar la versión y reintentar.
 4. Tras un guardado exitoso, la respuesta trae la nueva revisión o el cliente
    debe recargar; no reutilices la anterior.
+
+### Lecturas consistentes
+
+`GET /api/planillas/versiones/{id}` devuelve `version`, `firmas` y `lineas`
+leídos en **una sola transacción**, y los endpoints de documentos parten de esa
+misma lectura. No es un detalle de implementación: si alguien edita o cierra la
+planilla mientras se arma la respuesta, las tres partes siguen siendo de la
+misma revisión. Si la versión no existe, la respuesta es `404 NO_ENCONTRADO`.
 
 ## Creación de planilla
 

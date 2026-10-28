@@ -2,11 +2,13 @@
 Se ejecuta contra base de datos aislada cafae_test_*.
 """
 from decimal import Decimal
+import contextlib
 import os
 import secrets
 import sys
 import unittest
 import uuid
+from unittest import mock
 
 sys.path.insert(0, '/app')
 
@@ -16,7 +18,7 @@ from cafae.calculos import (calcular_licencia, calcular_liquidacion_trabajador,
 from cafae.catalogos import CatalogoService
 from cafae.planillas import PlanillaService
 from cafae.trabajadores import TrabajadorService
-from cafae.security import AccessError, UserError
+from cafae.security import AccessError, NoEncontrado, UserError
 
 if not os.environ.get('CAFAE_DB_NAME', '').startswith('cafae_test_'):
     raise SystemExit('Estas pruebas requieren una base cafae_test_* aislada.')
@@ -296,6 +298,112 @@ class TestPlanillasYCAlculos(unittest.TestCase):
         det_ene = PLAN.get_detalle_version(self.admin_token, res_ene['version_id'])
         self.assertEqual(res_ene['trabajadores_copiados'], len(det_ene))
         self.assertEqual(len(det_ene), len(det_dic))
+
+
+class LecturaConsistenteDeVersion(unittest.TestCase):
+    """D-04: cada lectura de una versión se arma en una sola transacción.
+
+    No toca la base: `data_transaction` se reemplaza por un doble que cuenta
+    cuántas transacciones abre la lectura. Si vuelve a partirse en varias, la
+    cabecera y las líneas pueden venir de revisiones distintas.
+    """
+
+    def _servicio(self, abiertas, conexion):
+        @contextlib.contextmanager
+        def transaccion(token, permiso):
+            abiertas.append(permiso)
+            yield conexion, {}
+
+        servicio = PlanillaService.__new__(PlanillaService)
+        servicio.auth = mock.Mock()
+        servicio.auth.data_transaction.side_effect = transaccion
+        return servicio
+
+    def test_version_completa_abre_una_sola_transaccion(self):
+        abiertas = []
+
+        class Conexion:
+            def execute(self, sql, params=None):
+                cursor = mock.Mock()
+                if 'FROM planilla_versiones' in sql:
+                    cursor.fetchone.return_value = {'id': 7, 'cantidad_firmas': 4}
+                elif 'FROM planilla_firmas' in sql:
+                    cursor.fetchall.return_value = [{'posicion': 1}, {'posicion': 2}]
+                else:
+                    cursor.fetchall.return_value = []
+                return cursor
+
+        datos = self._servicio(abiertas, Conexion()).get_version_completa('token', 7)
+
+        self.assertEqual(abiertas, ['consultar'])
+        self.assertEqual(datos['version']['id'], 7)
+        self.assertEqual(len(datos['firmas']), 2)
+        self.assertEqual(datos['lineas'], [])
+
+    def test_version_completa_usa_el_permiso_recibido(self):
+        abiertas = []
+
+        class Conexion:
+            def execute(self, sql, params=None):
+                cursor = mock.Mock()
+                cursor.fetchone.return_value = {'id': 7, 'cantidad_firmas': 4}
+                cursor.fetchall.return_value = []
+                return cursor
+
+        self._servicio(abiertas, Conexion()).get_version_completa(
+            'token', 7, permiso='generar_documentos')
+
+        self.assertEqual(abiertas, ['generar_documentos'])
+
+    def test_version_inexistente_es_no_encontrado(self):
+        abiertas = []
+
+        class Conexion:
+            def execute(self, sql, params=None):
+                cursor = mock.Mock()
+                cursor.fetchone.return_value = None
+                return cursor
+
+        with self.assertRaises(NoEncontrado):
+            self._servicio(abiertas, Conexion()).get_version_completa('token', 404)
+
+        self.assertEqual(abiertas, ['consultar'])
+
+    def test_linea_y_version_salen_de_la_misma_transaccion(self):
+        abiertas = []
+
+        class Conexion:
+            def execute(self, sql, params=None):
+                cursor = mock.Mock()
+                if 'SELECT version_id FROM planilla_detalle' in sql:
+                    cursor.fetchone.return_value = {'version_id': 7}
+                elif 'FROM planilla_versiones' in sql:
+                    cursor.fetchone.return_value = {'id': 7, 'cantidad_firmas': 4}
+                elif 'FROM planilla_detalle pd' in sql:
+                    cursor.fetchall.return_value = [{'id': 11, 'dni': '12345678'}]
+                else:
+                    cursor.fetchall.return_value = []
+                return cursor
+
+        version, fila = self._servicio(abiertas, Conexion()).get_linea_con_version('token', 11)
+
+        self.assertEqual(abiertas, ['consultar'])
+        self.assertEqual(version['id'], 7)
+        self.assertEqual(fila['dni'], '12345678')
+
+    def test_linea_inexistente_es_no_encontrado(self):
+        abiertas = []
+
+        class Conexion:
+            def execute(self, sql, params=None):
+                cursor = mock.Mock()
+                cursor.fetchone.return_value = None
+                return cursor
+
+        with self.assertRaises(NoEncontrado):
+            self._servicio(abiertas, Conexion()).get_linea_con_version('token', 404)
+
+        self.assertEqual(abiertas, ['consultar'])
 
 
 if __name__ == '__main__':

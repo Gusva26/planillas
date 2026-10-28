@@ -23,7 +23,7 @@ from cafae.importaciones import ImportacionService
 from cafae.planillas import PlanillaService
 from cafae.reportes import ReporteService
 from cafae.trabajadores import TrabajadorService
-from cafae.security import AccessError, UserError
+from cafae.security import AccessError, NoEncontrado, UserError
 
 if not os.environ.get('CAFAE_DB_NAME', '').startswith('cafae_test_'):
     raise SystemExit('Estas pruebas requieren una base cafae_test_* aislada.')
@@ -188,6 +188,26 @@ class TestFlujoIntegral(unittest.TestCase):
         self.assertEqual(len(primera['items']), 1)
         self.assertEqual(primera['total'], pagina['total'])
         self.assertNotEqual(primera['items'][0]['id'], segunda['items'][0]['id'])
+
+        # 11. Las rutas delegan la lectura consolidada en el servicio (D-04)
+        from cafae.api.routes_planillas import get_version_detalle
+
+        detalle = get_version_detalle(v1_id, {'token': self.admin_token})
+        self.assertEqual(set(detalle), {'version', 'firmas', 'lineas'})
+        self.assertEqual(detalle['version']['id'], v1_id)
+        self.assertEqual(detalle['version']['estado'], 'CERRADA')
+        self.assertEqual(len(detalle['lineas']), len(filas_cerradas))
+        self.assertTrue(detalle['firmas'])
+
+        with self.assertRaises(NoEncontrado):
+            get_version_detalle(99999999, {'token': self.admin_token})
+
+        # La boleta individual resuelve línea y versión en la misma transacción
+        from cafae.api.routes_documentos import descargar_boleta_individual
+
+        boleta_http = descargar_boleta_individual(filas_cerradas[0]['id'], {'token': self.admin_token})
+        self.assertEqual(boleta_http.status_code, 200)
+        self.assertEqual(boleta_http.media_type, 'application/pdf')
 
 
 if __name__ == '__main__':

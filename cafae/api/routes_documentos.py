@@ -44,20 +44,14 @@ def _exigir_version_cerrada(v_info: dict) -> None:
 
 
 def _get_contexto_version(token: str, version_id: int, *, permission: str = 'consultar'):
-    with pln_service.auth.data_transaction(token, permission) as (conn, _):
-        v_info = conn.execute(
-            '''SELECT pv.*, p.tipo, p.cantidad_firmas, per.anio, per.mes
-               FROM planilla_versiones pv
-               JOIN planillas p ON p.id = pv.planilla_id
-               JOIN periodos per ON per.id = p.periodo_id
-               WHERE pv.id = %s''',
-            (version_id,)
-        ).fetchone()
+    """Cabecera y líneas de la versión en una sola transacción (D-04).
 
-    if not v_info:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Versión de planilla no encontrada.')
-
-    filas = pln_service.get_detalle_version(token, version_id)
+    El catálogo de firmas se lee aparte a propósito: no es estado de la versión
+    y cambia con muy poca frecuencia.
+    """
+    datos = pln_service.get_version_completa(token, version_id, permiso=permission)
+    v_info = datos['version']
+    filas = datos['lineas']
     firmas = cat_service.list_firmas(token, solo_activas=True)
     firmas_doc = firmas[:v_info['cantidad_firmas']]
 
@@ -102,15 +96,7 @@ def descargar_remuneraciones_excel(version_id: int, user: Annotated[dict, Depend
 
 @router.get('/boleta-individual/{linea_id}')
 def descargar_boleta_individual(linea_id: int, user: Annotated[dict, Depends(require_permission(PERMISO_DOCUMENTOS))]):
-    token = user['token']
-    with pln_service.auth.data_transaction(token, PERMISO_DOCUMENTOS) as (conn, _):
-        fila_det = conn.execute('SELECT version_id, dni FROM planilla_detalle WHERE id = %s', (linea_id,)).fetchone()
-        if not fila_det:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Línea de trabajador no encontrada.')
-        v_info, filas, _ = _get_contexto_version(token, fila_det['version_id'], permission=PERMISO_DOCUMENTOS)
-        fila = next((f for f in filas if f['id'] == linea_id), None)
-        if not fila:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Trabajador no encontrado en la versión.')
+    v_info, fila = pln_service.get_linea_con_version(user['token'], linea_id, permiso=PERMISO_DOCUMENTOS)
 
     pdf_bytes = generar_boleta_pdf(fila, v_info)
     filename = f"Boleta_{fila['dni']}_{v_info['anio']}_{v_info['mes']:02d}.pdf"

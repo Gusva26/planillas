@@ -85,8 +85,9 @@ flowchart LR
 | `cafae/*.py` (servicios) | `cafae.db`, `security`, `calculos`, `documentos` | FastAPI |
 | `cafae/documentos/*` | `calculos`, tipos | `cafae.db` |
 
-**Violación actual**: 17 sentencias SQL viven en routers (`routes_catalogos.py`
-13, `routes_planillas.py` 2, `routes_documentos.py` 2). Ver deuda D-03.
+**Violación actual**: 13 sentencias SQL sobreviven en `routes_catalogos.py`
+(`DELETE ... RETURNING` de cada catálogo). Planillas y documentos ya delegan en
+el servicio. Ver deuda D-03.
 
 ### Inventario
 
@@ -95,7 +96,7 @@ flowchart LR
 | Endpoints | 99 | catálogos 62 · documentos 8 · planillas 7 · trabajadores 5 · auth 4 · users 4 · importaciones 4 · auditoría 2 · reportes 2 · health 1 |
 | Tablas | 35 | esquema `cafae` |
 | Migraciones | 8 | `001`–`008`, inmutables por SHA-256 |
-| Pruebas | 90 | `unittest`, 8 runners, base desechable `cafae_test_*` |
+| Pruebas | 100 | `unittest`, 8 runners, base desechable `cafae_test_*` |
 | UIs | 1 | React + Vite (ADR-005); Streamlit retirado el 28/10 |
 | Logging estructurado | 0 | sin `logging` en `cafae/`; 3 `print` |
 
@@ -117,8 +118,8 @@ flowchart LR
 | --- | --- | --- | --- | --- |
 | D-01 | Resuelto (era Crítico) | El TXT exige `txt_bancario`, está bloqueado por D.5 y solo se emite desde versión cerrada | `routes_documentos.py:20-42,168-208`; `tests/seguridad/` | 28/10 |
 | D-02 | Resuelto (era Crítico) | Un solo esquema de credenciales: `Authorization: Bearer`; sin query string ni cabeceras alternativas | `api/deps.py`; `frontend/src/api/client.ts` | 28/10 |
-| D-03 | Alto | SQL y lecturas dentro de routers | `routes_catalogos.py`; `routes_planillas.py:87`; `routes_documentos.py:22` | 3 |
-| D-04 | Alto | Respuestas armadas en dos transacciones ⇒ lectura inconsistente bajo edición concurrente | `routes_planillas.py:87-116`; `routes_documentos.py:21-34` | 3 |
+| D-03 | Alto | SQL y lecturas dentro de routers: quedan los 13 `DELETE ... RETURNING` de catálogos. Planillas y documentos leen por el servicio y una guardia AST lo verifica | `routes_catalogos.py`; `tests/api/test_contrato.py` | 3 |
+| D-04 | Resuelto (era Alto) | Cabecera, firmas y líneas de una versión salen de una sola transacción: `get_version_completa` y `get_linea_con_version`. Antes se armaban con dos y tres lecturas y podían mezclar revisiones | `cafae/planillas.py`; `routes_planillas.py`; `routes_documentos.py` | 28/10 |
 | D-05 | Resuelto | Los ocho endpoints de documentos exigen `generar_documentos`; `txt_bancario` además exige versión cerrada y D.5 habilitado. `CONSULTA` solo lee | `routes_documentos.py:21-22,69-211`; `tests/seguridad/test_documentos.py` | 28/10 |
 | D-06 | Resuelto (era Parcial) | Sobre de error uniforme (RFC 9457) con `code` estable, `403`/`401` para `AccessError`/`SessionError`, `409` para conflictos de revisión y `422` para validación. Ningún router captura `UserError`: los siete delegan en el handler global y una guardia AST lo verifica | `api/errors.py`; `api/main.py`; `tests/api/test_contrato.py` | 28/10 |
 | D-07 | Alto | 62 endpoints en un archivo de 992 líneas | `routes_catalogos.py` | 3 |
@@ -144,8 +145,17 @@ detectado en la base responde `409 CONFLICTO_REVISION` en vez de `500`, y
 crecen sin techo usan el sobre `Pagina[T]` (`GET /api/auditoria`) y el cliente
 ramifica por `code`. Ningún router de dominio captura `UserError`: se quitaron
 55 mapeos locales (48 en catálogos, 5 en trabajadores, 2 en reportes) y una
-guardia AST falla si reaparecen. Pruebas: `python scripts/test_api.py` (21
+guardia AST falla si reaparecen. Pruebas: `python scripts/test_api.py` (26
 casos, sin base de datos).
+
+**Lectura consistente de versiones 28/10/2026.** `GET /api/planillas/versiones/{id}`
+y los ocho endpoints de documentos armaban la respuesta con dos y tres
+transacciones distintas: cabecera, firmas y líneas podían venir de revisiones
+diferentes si alguien editaba o cerraba la planilla en el medio. Ahora
+`PlanillaService.get_version_completa` y `get_linea_con_version` leen todo en
+una sola transacción, y los dos routers dejaron de contener SQL. Los servicios
+pueden señalar un recurso ausente con `NoEncontrado`, que el API traduce a
+`404 NO_ENCONTRADO`.
 
 **Retiro de Streamlit 28/10/2026.** Se ejecutó el plan de ADR-005: se
 eliminaron `app.py`, `cafae/ui/` y `.streamlit/`, la dependencia `streamlit`

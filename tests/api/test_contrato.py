@@ -10,6 +10,7 @@ import json
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, '/app')
 
@@ -22,13 +23,14 @@ from cafae.api.main import (
     access_error_handler,
     app,
     http_exception_handler,
+    no_encontrado_handler,
     serialization_failure_handler,
     session_error_handler,
     user_error_handler,
     validation_error_handler,
 )
 from cafae.api.schemas import PlanillaCreada, RespuestaCreacionPlanilla
-from cafae.security import UserError
+from cafae.security import NoEncontrado, UserError
 
 
 def _request(path='/api/planillas'):
@@ -150,6 +152,19 @@ class Handlers(unittest.TestCase):
         body = _json(response)
         self.assertEqual(body['code'], 'NO_AUTENTICADO')
         self.assertEqual(body['detail'], 'Sesión vencida.')
+
+    def test_recurso_inexistente_es_404(self):
+        """`NoEncontrado` permite que un servicio señale 404 sin HTTPException."""
+        response = self._respuesta(
+            no_encontrado_handler,
+            NoEncontrado('Versión de planilla no encontrada.'),
+            path='/api/planillas/versiones/999999',
+        )
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.media_type, MEDIA_TYPE)
+        body = _json(response)
+        self.assertEqual(body['code'], 'NO_ENCONTRADO')
+        self.assertEqual(body['detail'], 'Versión de planilla no encontrada.')
 
     def test_conflicto_de_revision_es_409(self):
         from psycopg.errors import SerializationFailure
@@ -302,6 +317,91 @@ class ManejoDeErroresEnRutas(unittest.TestCase):
         )
         handler = arbol.body[0].handlers[0]
         self.assertTrue(_captura_user_error(handler.type))
+
+
+class SinSqlEnRouters(unittest.TestCase):
+    """D-03: el SQL vive en los servicios, no en los routers.
+
+    Solo cubre los routers ya migrados; `routes_catalogos` se sumará cuando sus
+    `DELETE ... RETURNING` se muevan a `CatalogoService`.
+    """
+
+    RUTAS = ['routes_planillas', 'routes_documentos']
+
+    def test_los_routers_migrados_no_ejecutan_sql_ni_abren_transacciones(self):
+        for nombre in self.RUTAS:
+            with self.subTest(router=nombre):
+                modulo = importlib.import_module(f'cafae.api.{nombre}')
+                arbol = ast.parse(Path(inspect.getfile(modulo)).read_text(encoding='utf-8'))
+                ejecuciones = [
+                    nodo.func.attr
+                    for nodo in ast.walk(arbol)
+                    if isinstance(nodo, ast.Call)
+                    and isinstance(nodo.func, ast.Attribute)
+                    and nodo.func.attr in ('execute', 'data_transaction')
+                ]
+                self.assertEqual(
+                    ejecuciones, [],
+                    f'{nombre} todavía accede a la base: moverlo al servicio.',
+                )
+
+
+class RoutersDeleganEnElServicio(unittest.TestCase):
+    """D-03/D-04: las rutas piden la lectura consolidada, no la arman."""
+
+    def test_version_detalle_es_una_sola_llamada_al_servicio(self):
+        from cafae.api import routes_planillas
+
+        with mock.patch.object(
+            routes_planillas.planilla_service, 'get_version_completa'
+        ) as servicio:
+            servicio.return_value = {'version': {'id': 5}, 'firmas': [], 'lineas': []}
+            respuesta = routes_planillas.get_version_detalle(
+                5, {'token': 'token'}, query='perez', institucion_id=2, area_id=3)
+
+        self.assertEqual(respuesta['version']['id'], 5)
+        servicio.assert_called_once_with(
+            'token', 5, institucion_id=2, area_id=3, query='perez')
+
+    def test_documentos_comparte_la_misma_lectura(self):
+        from cafae.api import routes_documentos
+
+        with mock.patch.object(
+            routes_documentos.pln_service, 'get_version_completa'
+        ) as servicio, mock.patch.object(
+            routes_documentos.cat_service, 'list_firmas'
+        ) as firmas:
+            servicio.return_value = {
+                'version': {'id': 5, 'cantidad_firmas': 2},
+                'firmas': [],
+                'lineas': [{'id': 1}],
+            }
+            firmas.return_value = [{'id': 10}, {'id': 11}, {'id': 12}]
+            v_info, filas, firmas_doc = routes_documentos._get_contexto_version(
+                'token', 5, permission='generar_documentos')
+
+        servicio.assert_called_once_with('token', 5, permiso='generar_documentos')
+        self.assertEqual(v_info['id'], 5)
+        self.assertEqual(filas, [{'id': 1}])
+        # El catálogo se recorta a las firmas que pide la planilla.
+        self.assertEqual([f['id'] for f in firmas_doc], [10, 11])
+
+    def test_boleta_individual_pide_linea_y_version_juntas(self):
+        from cafae.api import routes_documentos
+
+        with mock.patch.object(
+            routes_documentos.pln_service, 'get_linea_con_version'
+        ) as servicio, mock.patch.object(
+            routes_documentos, 'generar_boleta_pdf'
+        ) as boleta:
+            servicio.return_value = ({'anio': 2026, 'mes': 3}, {'id': 11, 'dni': '12345678'})
+            boleta.return_value = b'%PDF-1.4'
+            respuesta = routes_documentos.descargar_boleta_individual(
+                11, {'token': 'token'})
+
+        servicio.assert_called_once_with('token', 11, permiso='generar_documentos')
+        self.assertEqual(respuesta.status_code, 200)
+        self.assertEqual(respuesta.body, b'%PDF-1.4')
 
 
 if __name__ == '__main__':

@@ -15,7 +15,7 @@ from psycopg.errors import CheckViolation, SerializationFailure, UniqueViolation
 
 from cafae.auth import AuthService
 from cafae.calculos import CONCEPTOS_DESCUENTO, a_decimal, calcular_liquidacion_trabajador
-from cafae.security import AccessError, UserError
+from cafae.security import AccessError, NoEncontrado, UserError
 
 VERSION_CALCULO = 'decimal-half-up-v1'
 
@@ -398,8 +398,65 @@ class PlanillaService:
     # =========================================================================
     # C. CONSULTA DE DETALLE Y FILAS CON DESCUENTOS
     # =========================================================================
-    def get_detalle_version(self, token, version_id, institucion_id=None, area_id=None, query=None):
+    # D-04: la cabecera, sus firmas y sus líneas se leen en la misma transacción.
+    # Armarlas con lecturas separadas permitía responder con la cabecera de una
+    # revisión y las líneas de otra si alguien cerraba o editaba la planilla en
+    # el medio; en documentos eso produce un PDF con firmas que no corresponden.
+
+    def _leer_version(self, conn, version_id):
+        """Cabecera de la versión con el tipo, el periodo y quién la creó/cerró."""
+        return conn.execute(
+            '''SELECT pv.*, p.tipo, p.cantidad_firmas, per.anio, per.mes,
+                      u_crea.nombre_completo AS creada_por_nombre,
+                      u_cerr.nombre_completo AS cerrada_por_nombre
+               FROM planilla_versiones pv
+               JOIN planillas p ON p.id = pv.planilla_id
+               JOIN periodos per ON per.id = p.periodo_id
+               JOIN usuarios u_crea ON u_crea.id = pv.creada_por
+               LEFT JOIN usuarios u_cerr ON u_cerr.id = pv.cerrada_por
+               WHERE pv.id = %s''',
+            (version_id,)
+        ).fetchone()
+
+    def _leer_firmas_version(self, conn, version_id):
+        """Firmas registradas al cerrar la versión (vacío si sigue abierta)."""
+        return conn.execute(
+            'SELECT * FROM planilla_firmas WHERE version_id = %s ORDER BY posicion ASC',
+            (version_id,)
+        ).fetchall()
+
+    def get_version_completa(self, token, version_id, *, permiso='consultar',
+                             institucion_id=None, area_id=None, query=None):
+        """Cabecera, firmas y líneas de una versión en una sola transacción."""
         version_id = int(version_id)
+        with self.auth.data_transaction(token, permiso) as (conn, _):
+            version = self._leer_version(conn, version_id)
+            if not version:
+                raise NoEncontrado('Versión de planilla no encontrada.')
+            firmas = self._leer_firmas_version(conn, version_id)
+            lineas = self._leer_detalle(conn, version_id, institucion_id, area_id, query)
+        return {'version': version, 'firmas': firmas, 'lineas': lineas}
+
+    def get_linea_con_version(self, token, linea_id, *, permiso='consultar'):
+        """Versión y línea de detalle en una sola transacción."""
+        linea_id = int(linea_id)
+        with self.auth.data_transaction(token, permiso) as (conn, _):
+            referencia = conn.execute(
+                'SELECT version_id FROM planilla_detalle WHERE id = %s', (linea_id,)
+            ).fetchone()
+            if not referencia:
+                raise NoEncontrado('Línea de trabajador no encontrada.')
+            version = self._leer_version(conn, referencia['version_id'])
+            if not version:
+                raise NoEncontrado('Versión de planilla no encontrada.')
+            lineas = self._leer_detalle(conn, referencia['version_id'])
+        fila = next((f for f in lineas if f['id'] == linea_id), None)
+        if not fila:
+            raise NoEncontrado('Trabajador no encontrado en la versión.')
+        return version, fila
+
+    def _leer_detalle(self, conn, version_id, institucion_id=None, area_id=None, query=None):
+        """Filas de detalle enriquecidas; requiere una conexión ya abierta."""
         sql = '''SELECT pd.id, pd.version_id, pd.trabajador_id, pd.orden, pd.dni, pd.apellidos, pd.nombres,
                         pd.institucion_id, pd.institucion_nombre, pd.codigo_modular, pd.distrito,
                         pd.area_id, pd.area_nombre, pd.nivel_id, pd.nivel_nombre,
@@ -448,32 +505,36 @@ class PlanillaService:
             params.extend([clean_q, clean_q, clean_q])
 
         sql += ' ORDER BY pd.orden ASC'
+        rows = conn.execute(sql, params).fetchall()
+        if not rows:
+            return []
+
+        det_ids = [r['id'] for r in rows]
+        descs = conn.execute(
+            '''SELECT pd.detalle_id, td.id AS tipo_id, td.codigo, td.nombre, pd.monto
+               FROM planilla_descuentos pd
+               JOIN tipos_descuento td ON td.id = pd.tipo_descuento_id
+               WHERE pd.detalle_id = ANY(%s)''',
+            (det_ids,)
+        ).fetchall()
+
+        map_descs = {}
+        for d in descs:
+            map_descs.setdefault(d['detalle_id'], {})[d['codigo']] = d['monto']
+
+        for r in rows:
+            row_descs = map_descs.get(r['id'], {})
+            r['descuentos'] = row_descs
+            for cod, monto in row_descs.items():
+                r[cod] = monto
+                r[cod.lower()] = monto
+
+        return rows
+
+    def get_detalle_version(self, token, version_id, institucion_id=None, area_id=None, query=None):
+        version_id = int(version_id)
         with self.auth.data_transaction(token, 'consultar') as (conn, _):
-            rows = conn.execute(sql, params).fetchall()
-            if not rows:
-                return []
-
-            det_ids = [r['id'] for r in rows]
-            descs = conn.execute(
-                '''SELECT pd.detalle_id, td.id AS tipo_id, td.codigo, td.nombre, pd.monto
-                   FROM planilla_descuentos pd
-                   JOIN tipos_descuento td ON td.id = pd.tipo_descuento_id
-                   WHERE pd.detalle_id = ANY(%s)''',
-                (det_ids,)
-            ).fetchall()
-
-            map_descs = {}
-            for d in descs:
-                map_descs.setdefault(d['detalle_id'], {})[d['codigo']] = d['monto']
-
-            for r in rows:
-                row_descs = map_descs.get(r['id'], {})
-                r['descuentos'] = row_descs
-                for cod, monto in row_descs.items():
-                    r[cod] = monto
-                    r[cod.lower()] = monto
-
-            return rows
+            return self._leer_detalle(conn, version_id, institucion_id, area_id, query)
 
     list_lineas_edicion = get_detalle_version
 

@@ -19,7 +19,7 @@ from cafae.api.routes_importaciones import router as importaciones_router
 from cafae.api.routes_documentos import router as documentos_router
 from cafae.api.routes_reportes import router as reportes_router
 from cafae.api.routes_auditoria import router as auditoria_router
-from cafae.security import AccessError, SessionError, UserError
+from cafae.security import AccessError, NoEncontrado, SessionError, UserError
 
 
 class CustomJSONEncoder(json.JSONEncoder):
@@ -95,6 +95,13 @@ async def user_error_handler(request: Request, exc: UserError):
 @app.exception_handler(SessionError)
 async def session_error_handler(request: Request, exc: SessionError):
     body = problema('NO_AUTENTICADO', str(exc), instance=request.url.path)
+    return _respuesta_problema(body, body['status'])
+
+
+@app.exception_handler(NoEncontrado)
+async def no_encontrado_handler(request: Request, exc: NoEncontrado):
+    """El servicio no halló el recurso: `404` en vez de un `400` genérico."""
+    body = problema('NO_ENCONTRADO', str(exc), instance=request.url.path)
     return _respuesta_problema(body, body['status'])
 
 

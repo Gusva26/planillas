@@ -1,6 +1,6 @@
 """Rutas de gestión y ciclo de vida de planillas."""
 from typing import Annotated, Any, Optional
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
 from cafae.api.deps import get_current_user, require_role
@@ -79,45 +79,19 @@ def get_version_detalle(
     institucion_id: Optional[int] = None,
     area_id: Optional[int] = None,
 ):
-    """Devuelve la información consolidada de la versión y todas sus líneas de detalle."""
-    token = user['token']
-    # 1. Obtener datos de la versión
-    with planilla_service.auth.data_transaction(token, 'consultar') as (conn, _):
-        version_info = conn.execute(
-            '''SELECT pv.*, p.tipo, p.cantidad_firmas, per.anio, per.mes,
-                      u_crea.nombre_completo AS creada_por_nombre,
-                      u_cerr.nombre_completo AS cerrada_por_nombre
-               FROM planilla_versiones pv
-               JOIN planillas p ON p.id = pv.planilla_id
-               JOIN periodos per ON per.id = p.periodo_id
-               JOIN usuarios u_crea ON u_crea.id = pv.creada_por
-               LEFT JOIN usuarios u_cerr ON u_cerr.id = pv.cerrada_por
-               WHERE pv.id = %s''',
-            (version_id,)
-        ).fetchone()
-        if not version_info:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Versión no encontrada.')
+    """Devuelve la información consolidada de la versión y todas sus líneas de detalle.
 
-        # Firmas asignadas si está cerrada
-        firmas = conn.execute(
-            'SELECT * FROM planilla_firmas WHERE version_id = %s ORDER BY posicion ASC',
-            (version_id,)
-        ).fetchall()
-
-    # 2. Obtener líneas de detalle
-    lineas = planilla_service.get_detalle_version(
-        token,
+    Cabecera, firmas y líneas salen de la misma transacción (D-04): si alguien
+    edita o cierra la planilla mientras se arma la respuesta, no se mezclan
+    revisiones distintas.
+    """
+    return planilla_service.get_version_completa(
+        user['token'],
         version_id,
-        query=query,
         institucion_id=institucion_id,
         area_id=area_id,
+        query=query,
     )
-
-    return {
-        'version': version_info,
-        'firmas': firmas,
-        'lineas': lineas,
-    }
 
 
 @router.put('/versiones/{version_id}/lineas')
