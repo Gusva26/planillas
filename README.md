@@ -1,7 +1,7 @@
 # Sistema de Gestión de Planillas CAFAE · UGEL Chepén
 
 **Sistema web integral de planillas CAFAE implementado y probado.**
-Desarrollado en Python + Streamlit + PostgreSQL 17 en contenedores Docker, con arquitectura modular por capas, seguridad estricta, fidelidad a las plantillas institucionales y cobertura total de las etapas administrativas.
+Desarrollado en Python (FastAPI) + React + PostgreSQL 17 en contenedores Docker, con arquitectura modular por capas, seguridad estricta, fidelidad a las plantillas institucionales y cobertura total de las etapas administrativas.
 
 ---
 
@@ -11,10 +11,16 @@ La aplicación web está disponible localmente en:
 👉 **[http://localhost:8501](http://localhost:8501)**
 
 ### Primer Administrador del Sistema
-Para inicializar el primer administrador institucional (si aún no se ha creado), ejecute en PowerShell:
+Antes de inicializar el usuario (o tras recrear la base de datos), asegúrese de tener configuradas las credenciales del servicio y migraciones ejecutando:
 
 ```powershell
-docker compose run --rm app python -m cafae.bootstrap
+python scripts/setup_app.py
+```
+
+Luego, inicialice el primer administrador institucional ejecutando en PowerShell:
+
+```powershell
+docker compose run --build --rm app python -m cafae.bootstrap
 ```
 *El comando solicitará nombre de usuario, nombre completo y contraseña mediante ingreso oculto por consola.*
 
@@ -70,7 +76,8 @@ docker compose stop
 - **D.2 Importe de Sede**: Corresponde a "REMUN. TOTAL" (columna I de la referencia).
 - **D.3 Firmas**: Exactamente 4 firmas en II.EE. y 3 en Sede, con bloque de firmas indivisible al final.
 - **D.4 Ocho descuentos completos**: Pichincha, Caja Sullana, Sub-CAFAE, Convenio BRENTA, SITRASE, SITASE/FENTASE, Licencia sin goce y Otros descuentos.
-- **D.5 TXT bancario**: Bloqueo preventivo documentado sin generar salidas provisionales no certificadas.
+- **D.5 TXT bancario**: Bloqueo preventivo documentado sin generar salidas provisionales no certificadas. El endpoint exige permiso `txt_bancario`, responde `403` salvo `CAFAE_TXT_BANCARIO=1` y solo opera sobre versiones cerradas ([ADR-006](docs/adr/ADR-006-documentos-permiso-y-version-cerrada.md)).
+- **Documentos oficiales**: PDF, Excel, remuneraciones, boletas y cuadernillo exigen permiso `generar_documentos` (ADMINISTRADOR / PLANILLAS). El rol `CONSULTA` puede leer planillas pero no emitir documentos.
 
 ---
 
@@ -86,3 +93,4 @@ docker compose stop
 8. [Plan de Pruebas y Criterios de Aceptación](docs/05-plan-y-pruebas.md)
 9. [Base de Datos Implementada](docs/09-base-datos-implementada.md)
 10. [Acceso, Usuarios y Roles](docs/10-acceso-y-usuarios.md)
+11. [Decisiones de Arquitectura (ADR)](docs/adr/README.md)

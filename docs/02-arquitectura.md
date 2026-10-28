@@ -1,17 +1,167 @@
-# Arquitectura propuesta
+# Arquitectura
 
-**Actualización 24/09/2026:** la capa PostgreSQL ya está implementada mediante seis migraciones y verificada con pruebas reales. El resto de esta arquitectura describe los módulos por desarrollar. El [informe de implementación](09-base-datos-implementada.md) distingue las protecciones existentes de los servicios e interfaz pendientes.
+**Estado: implementado · revisión 28/10/2026.** La primera sección describe el
+sistema real; la segunda conserva el diseño objetivo original del 24/09/2026.
+Las diferencias y el porqué están en el [registro de ADR](adr/README.md).
+
+> Regla de lectura: **§Estado implementado es la fuente de verdad**. §Diseño
+> objetivo original explica la intención y las piezas que aún no existen (OCR,
+> storage privado, pytest).
+
+## Estado implementado (28/10/2026)
+
+### C4 nivel 1 — Contexto
+
+```mermaid
+flowchart LR
+    U["Usuario administrativo<br/>ADMINISTRADOR · PLANILLAS · CONSULTA"]
+    S["Sistema de Planillas CAFAE<br/>UGEL Chepén"]
+    B["Banco de la Nación<br/>destino manual del TXT"]
+
+    U -->|"HTTPS en red local"| S
+    S -.->|"archivo TXT descargado"| B
+```
+
+### C4 nivel 2 — Contenedores
+
+```mermaid
+flowchart TB
+    subgraph HOST["Docker Compose · cafae-local"]
+        APP["cafae-app-dev<br/>FastAPI + Uvicorn :8501<br/>API /api + SPA estática"]
+        DB[("cafae-postgres-dev<br/>PostgreSQL 17<br/>host :55432")]
+    end
+    SPA["Navegador<br/>React 19 + Vite (dist/)"] -->|"fetch /api"| APP
+    OPS["Operación<br/>migrate.py · bootstrap · runners de test"] -->|"docker exec / compose run"| APP
+    OPS --> DB
+    APP -->|"psycopg · SET LOCAL ROLE"| DB
+```
+
+### C4 nivel 3 — Componentes del backend
+
+```mermaid
+flowchart LR
+    subgraph API["cafae/api"]
+        R["9 routers<br/>routes_*.py"]
+        D["deps.py<br/>get_current_user · require_role"]
+    end
+    subgraph DOM["Dominio · cafae/*.py"]
+        AU["AuthService"]
+        PL["PlanillaService"]
+        TR["TrabajadorService"]
+        CA["CatalogoService"]
+        IM["ImportacionService"]
+        RE["ReporteService"]
+        AD["AuditoriaService"]
+        DOC["documentos/*<br/>PDF · Excel · boletas · TXT"]
+    end
+    DB[("PostgreSQL<br/>35 tablas · 3 roles SQL")]
+
+    R --> D
+    R --> PL
+    R --> TR
+    R --> CA
+    R --> IM
+    R --> RE
+    R --> AD
+    R --> DOC
+    D --> AU
+    AU -->|"cafae.db.transaction"| DB
+    PL --> DB
+    TR --> DB
+    CA --> DB
+    IM --> DB
+    RE --> DB
+    AD --> DB
+    DOC -.->|"recibe datos resueltos, no consulta"| PL
+```
+
+### Regla de dependencia
+
+| Capa | Puede importar | No puede |
+| --- | --- | --- |
+| `frontend/src` | `/api` por HTTP | reglas de negocio, SQL |
+| `cafae/api/routes_*` | `deps`, servicios, Pydantic | `cafae.db`, `psycopg`, Streamlit |
+| `cafae/api/deps.py` | `AuthService`, `security` | servicios de dominio |
+| `cafae/*.py` (servicios) | `cafae.db`, `security`, `calculos`, `documentos` | FastAPI, Streamlit |
+| `cafae/documentos/*` | `calculos`, tipos | `cafae.db` |
+| `cafae/ui/*` (legado) | servicios de dominio | routers, FastAPI |
+
+**Violación actual**: 17 sentencias SQL viven en routers (`routes_catalogos.py`
+13, `routes_planillas.py` 2, `routes_documentos.py` 2). Ver deuda D-03.
+
+### Inventario
+
+| Elemento | Cantidad | Detalle |
+| --- | --- | --- |
+| Endpoints | 94 | catálogos 62 · documentos 8 · planillas 7 · trabajadores 5 · auth 4 · importaciones 4 · auditoría 2 · reportes 2 |
+| Tablas | 35 | esquema `cafae` |
+| Migraciones | 8 | `001`–`008`, inmutables por SHA-256 |
+| Pruebas | 81 | `unittest`, 9 runners, base desechable `cafae_test_*` |
+| UIs | 2 | React (objetivo) + Streamlit (legado) |
+| Logging estructurado | 0 | sin `logging` en `cafae/`; 3 `print` |
+
+### Desviaciones frente al diseño original
+
+| Diseño 24/09/2026 | Implementado | Registro |
+| --- | --- | --- |
+| SQLAlchemy + repositorios | `psycopg` + SQL en servicios | ADR-001 |
+| Alembic | `scripts/migrate.py` con hash y advisory lock | ADR-002 |
+| pytest | `unittest` + runners Docker | pendiente de ADR |
+| `app/{domain,application,infrastructure}` | `cafae/` plano por dominio | ADR-001 |
+| Importadores PDF/DOCX/OCR | solo Excel | fuera de alcance |
+| Storage privado de archivos | documentos generados en memoria | por definir |
+| Una sola UI | React + Streamlit → solo React | ADR-005 |
+
+### Deuda priorizada
+
+| ID | Severidad | Hallazgo | Evidencia | Fase |
+| --- | --- | --- | --- | --- |
+| D-01 | Resuelto (era Crítico) | El TXT exige `txt_bancario`, está bloqueado por D.5 y solo se emite desde versión cerrada | `routes_documentos.py:20-42,168-208`; `tests/seguridad/` | 28/10 |
+| D-02 | Resuelto (era Crítico) | Un solo esquema de credenciales: `Authorization: Bearer`; sin query string ni cabeceras alternativas | `api/deps.py`; `frontend/src/api/client.ts` | 28/10 |
+| D-03 | Alto | SQL y lecturas dentro de routers | `routes_catalogos.py`; `routes_planillas.py:87`; `routes_documentos.py:22` | 3 |
+| D-04 | Alto | Respuestas armadas en dos transacciones ⇒ lectura inconsistente bajo edición concurrente | `routes_planillas.py:87-116`; `routes_documentos.py:21-34` | 3 |
+| D-05 | Resuelto | Los ocho endpoints de documentos exigen `generar_documentos`; `txt_bancario` además exige versión cerrada y D.5 habilitado. `CONSULTA` solo lee | `routes_documentos.py:21-22,69-211`; `tests/seguridad/test_documentos.py` | 28/10 |
+| D-06 | Alto | Mapeo de errores repetido por endpoint y `str(exc)` expuesto al cliente | `routes_planillas.py:52-156`; handlers en `main.py:61-82` | 2 / 4 |
+| D-07 | Alto | 62 endpoints en un archivo de 963 líneas | `routes_catalogos.py` | 3 |
+| D-08 | Medio | Sin logging estructurado ni ID de correlación | `cafae/**` (0 loggers, 3 `print`) | 6 |
+| D-09 | Medio | CORS `*` con credenciales, innecesario en mismo origen | `main.py:52-58` | 4 |
+| D-10 | Medio | Cliente sin contrato: `apiRequest<T = any>`, tipos duplicados, navegación por estado | `frontend/src/api/client.ts:19`; `App.tsx:21` | 2 / 5 |
+| D-11 | Medio | Conexión nueva por transacción, sin pool: techo de concurrencia desconocido | `cafae/db.py:17-23` | 3 (medir) |
+| D-12 | Bajo | Este documento describía un sistema distinto al implementado | `docs/02-arquitectura.md` | 1 (resuelto) |
+
+**Hotfix 28/10/2026.** D-01, D-02 y D-05 quedaron cerrados:
+`GET /api/documentos/banco-txt/{id}` y `banco-txt-resumen` exigen permiso
+`txt_bancario` (ADMINISTRADOR/PLANILLAS), responden `403` mientras D.5 siga
+vigente (`CAFAE_TXT_BANCARIO=1` es la única habilitación) y exigen versión
+`CERRADA`. El resto de documentos (PDF, Excel, remuneraciones, boletas y
+cuadernillo) exigen `generar_documentos`, y `CONSULTA` conserva solo lectura.
+Pruebas: `python scripts/test_seguridad.py` (15 casos).
+
+### Riesgos abiertos
+
+- **Capacidad desconocida**: sin pool ni métricas no se puede afirmar cuántos
+  usuarios concurrentes soporta el sistema.
+- **Doble UI en retiro**: Streamlit sigue en el árbol hasta completar la matriz
+  de paridad; ADR-005 fija el plan y prohíbe replicar correcciones allí.
+- **Token en `localStorage`**: un XSS escala a robo de sesión completa.
+- **TXT bancario**: el formato ya está implementado y probado, pero D.5 lo
+  mantiene bloqueado hasta la especificación oficial.
+- **Dos fuentes de reglas**: triggers en la base y validaciones en servicios
+  pueden divergir; la mitigación son las pruebas de integridad existentes.
+
+## Diseño objetivo original (24/09/2026)
 
 Las [decisiones confirmadas](08-decisiones-confirmadas.md) fijan un solo ingreso, el importe de Sede desde REMUN. TOTAL y ocho descuentos en ambos formatos. Se retiran los conceptos adicionales de los nuevos documentos. Las firmas son cuatro en II.EE. y tres en Sede, con personas y cargos configurables; Gestión Administrativa corresponde al formato de II.EE.
 
 ## Capas y dependencias
 
-Monolito modular: un despliegue inicial sencillo, con módulos separados y una única base de datos. Streamlit presenta formularios y tablas; no concentra reglas de negocio ni SQL en `app.py`.
+Monolito modular: un despliegue inicial sencillo, con módulos separados y una única base de datos. La interfaz React presenta formularios y tablas consumiendo la API REST (FastAPI); no concentra reglas de negocio ni SQL.
 
 ```mermaid
 flowchart LR
-    U[Usuario administrativo] --> UI[Streamlit: vistas y componentes]
-    UI --> A[Servicios: sesión, permisos y transacciones]
+    U[Usuario administrativo] --> UI[Frontend React: vistas y componentes]
+    UI --> API[API REST FastAPI]
+    API --> A[Servicios: sesión, permisos y transacciones]
     A --> D[Dominio: cálculos y validaciones]
     A --> R[Repositorios SQLAlchemy]
     R --> PG[(PostgreSQL)]
@@ -23,13 +173,13 @@ flowchart LR
     A --> AU[Auditoría y logs]
 ```
 
-La interfaz llama a servicios con identidad autenticada. Los servicios verifican permisos, validan entradas, bloquean la versión y ejecutan repositorios en una unidad de trabajo. El dominio usa objetos y `Decimal`, sin dependencia de Streamlit ni Pandas. Los generadores reciben un contrato de datos histórico y no consultan el maestro.
+La interfaz llama a servicios con identidad autenticada. Los servicios verifican permisos, validan entradas, bloquean la versión y ejecutan repositorios en una unidad de trabajo. El dominio usa objetos y `Decimal`, sin dependencia de la UI ni Pandas. Los generadores reciben un contrato de datos histórico y no consultan el maestro.
 
 ## Componentes
 
 | Componente | Responsabilidad |
 |---|---|
-| Python / Streamlit | Interfaz en español, navegación, sesión de presentación, formularios y edición por lote |
+| React + Vite / FastAPI | Interfaz en español, navegación, sesión de presentación, formularios y edición por lote |
 | SQLAlchemy / psycopg | Acceso parametrizado a PostgreSQL; repositorios y transacciones |
 | Alembic | Migraciones revisables y versionadas, separadas del arranque de la aplicación |
 | PostgreSQL | Relaciones, unicidad, importes exactos, historial, auditoría e índices |
@@ -50,10 +200,10 @@ Este árbol describe los módulos futuros; no indica que estén implementados.
 
 ```text
 proyecto_planillas/
-  app.py                          # composición y navegación; sin reglas de negocio
+  frontend/                       # Aplicación React + Vite
+  cafae/                          # Backend modular y API FastAPI
   pyproject.toml
   .env.example                    # nombres de variables, nunca credenciales reales
-  .streamlit/config.toml
   app/
     config.py
     bootstrap.py
@@ -223,7 +373,7 @@ No confundir `st.login()` con validación de contraseñas locales: el mecanismo 
 
 Defensas previstas: límite de intentos por cuenta/origen con respuestas genéricas, TLS en proxy, protección XSRF/CORS activa, secretos por entorno, consultas parametrizadas, archivos privados fuera de rutas públicas y mínimos privilegios. Las descargas también verifican rol y alcance; no usar enlaces públicos permanentes. Cachear solo datos seguros o con clave de identidad/permiso/versión; nunca compartir un DataFrame sensible entre sesiones sin control.
 
-La matriz de roles vive en el servicio de autorización. La interfaz oculta acciones no permitidas por claridad, pero una llamada directa debe rechazarse igualmente. CONSULTA descarga PDF, Excel y boletas autorizados; TXT requiere permiso explícito de generación y descarga reservado inicialmente a ADMINISTRADOR y PLANILLAS.
+La matriz de roles vive en el servicio de autorización. La interfaz oculta acciones no permitidas por claridad, pero una llamada directa debe rechazarse igualmente. `CONSULTA` conserva solo lectura; la emisión de PDF, Excel, boletas y remuneraciones exige `generar_documentos`, y el TXT exige además `txt_bancario` y versión cerrada (ADR-006, aceptado el 28/10/2026).
 
 ## Operación y recuperación
 
@@ -240,6 +390,5 @@ La generación larga/OCR tendrá límite de recursos y estado persistente; comen
 - Exactitud monetaria: [PostgreSQL, tipos numéricos](https://www.postgresql.org/docs/current/datatype-numeric.html).
 - Restricciones por fila y relaciones: [PostgreSQL, constraints](https://www.postgresql.org/docs/18/ddl-constraints.html).
 - Exclusión de escritores concurrentes: [PostgreSQL, bloqueos explícitos](https://www.postgresql.org/docs/current/explicit-locking.html).
-- Sesión de interfaz: [Streamlit, Session State](https://docs.streamlit.io/develop/api-reference/caching-and-state/st.session_state).
-- Distinción autenticación/autorización y OIDC: [Streamlit, autenticación](https://docs.streamlit.io/develop/concepts/connections/authentication).
+- API y especificación: [FastAPI Documentation](https://fastapi.tiangolo.com/).
 - Hash de contraseñas: [OWASP, almacenamiento de contraseñas](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html).

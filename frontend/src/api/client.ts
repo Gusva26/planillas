@@ -25,7 +25,6 @@ export async function apiRequest<T = any>(
 
   if (token) {
     headers.set('Authorization', `Bearer ${token}`);
-    headers.set('X-Session-Token', token);
   }
 
   if (!(options.body instanceof FormData) && !headers.has('Content-Type')) {

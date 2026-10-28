@@ -65,6 +65,7 @@ class TestFlujoIntegral(unittest.TestCase):
         n_id = CAT.create_nivel(self.admin_token, f'Secundaria {uuid.uuid4().hex[:4]}')
         m_id = CAT.create_meta(self.admin_token, f'M{uuid.uuid4().hex[:3]}', 'Educación Secundaria')
         CAT.set_nivel_meta(self.admin_token, n_id, m_id)
+        cat_id = CAT.create_categoria(self.admin_token, 'A1', 'Profesional')
 
         inst_id = CAT.create_institucion(
             self.admin_token, '0098765', 'I.E. San José de Chepén', n_id, 'Chepén'
@@ -81,12 +82,14 @@ class TestFlujoIntegral(unittest.TestCase):
         dni_2 = '00445566'
         t1 = TRAB.create_trabajador(token_operador, {
             'dni': dni_1, 'apellidos': 'Vargas Llosa', 'nombres': 'Mario',
-            'tipo': 'IIEE', 'institucion_id': inst_id, 'importe': Decimal('1350.00'),
+            'tipo': 'IIEE', 'institucion_id': inst_id, 'nivel_id': n_id,
+            'categoria_id': cat_id, 'importe': Decimal('1350.00'),
             'cuenta_multired': '00123456789'
         })
         t2 = TRAB.create_trabajador(token_operador, {
             'dni': dni_2, 'apellidos': 'Arguedas Altamirano', 'nombres': 'José María',
-            'tipo': 'SEDE', 'area_id': area_id, 'importe': Decimal('1800.00'),
+            'tipo': 'SEDE', 'area_id': area_id, 'nivel_id': n_id,
+            'categoria_id': cat_id, 'importe': Decimal('1800.00'),
             'cuenta_multired': '00987654321'
         })
 
@@ -100,7 +103,13 @@ class TestFlujoIntegral(unittest.TestCase):
         detalles = PLAN.get_detalle_version(token_operador, v1_id)
         row_t1 = detalles[0]['id']
 
-        PLAN.guardar_edicion_lote(token_operador, v1_id, revision_esperada=1, cambios=[{
+        # Cada inserción de hijos (detalle, descuentos, firmas) ejecuta
+        # bloquear_edicion() y sube revision_edicion. Un cliente debe releerla
+        # antes de editar: el valor del INSERT inicial ya está obsoleto.
+        revision_actual = PLAN.get_planilla_version(token_operador, p_id)['revision_edicion']
+        self.assertGreater(revision_actual, 1)
+
+        PLAN.guardar_edicion_lote(token_operador, v1_id, revision_esperada=revision_actual, cambios=[{
             'detalle_id': row_t1,
             'importe': Decimal('1350.00'),
             'dias_licencia': 3,  # Licencia 3 días: 1350/30*3 = 135.00

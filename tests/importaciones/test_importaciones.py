@@ -44,6 +44,9 @@ def crear_excel_descuentos(filas: list[tuple]) -> bytes:
 
 
 class TestImportaciones(unittest.TestCase):
+    # Cada test usa un periodo distinto: la unicidad (periodo, tipo) es real.
+    _periodo = 0
+
     @classmethod
     def setUpClass(cls):
         try:
@@ -79,8 +82,11 @@ class TestImportaciones(unittest.TestCase):
             'tipo': 'IIEE', 'institucion_id': self.inst_id, 'importe': Decimal('1350.00')
         })
 
-        # Crear planilla
-        res_pln = PLAN.crear_desde_maestro(self.admin_token, 2026, 8, 'IIEE')
+        # Crear planilla en un periodo exclusivo de este test
+        type(self)._periodo += 1
+        anio = 2026 + (type(self)._periodo - 1) // 12
+        mes = (type(self)._periodo - 1) % 12 + 1
+        res_pln = PLAN.crear_desde_maestro(self.admin_token, anio, mes, 'IIEE')
         self.planilla_id = res_pln['planilla_id']
         self.version_id = res_pln['version_id']
 
@@ -151,7 +157,12 @@ class TestImportaciones(unittest.TestCase):
         IMP.cambiar_seleccion_fila(self.admin_token, imp_id, 1, seleccionado=True)
 
         # IMP-08: Aplicar en modo ACTUALIZAR
-        res_ap = IMP.aplicar_importacion(self.admin_token, imp_id, modo='ACTUALIZAR', revision_esperada=1)
+        # La revisión la mueven las inserciones previas: se relee antes de aplicar.
+        revision_actual = PLAN.get_planilla_version(
+            self.admin_token, self.planilla_id)['revision_edicion']
+        res_ap = IMP.aplicar_importacion(
+            self.admin_token, imp_id, modo='ACTUALIZAR',
+            revision_esperada=revision_actual)
         self.assertEqual(res_ap['registros_aplicados'], 1)
         self.assertEqual(res_ap['total_aplicado'], Decimal('250.00'))
 
