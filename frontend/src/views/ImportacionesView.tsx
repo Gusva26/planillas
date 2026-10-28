@@ -1,57 +1,82 @@
 import React, { useState, useEffect } from 'react';
 import { apiRequest } from '../api/client';
-import { PlanillaListItem } from '../types';
+import { mensajeDeError } from '../api/errors';
+import {
+  ImportacionDetalle,
+  PlanillaListItem,
+  RespuestaProcesarImportacion,
+  TipoDescuento,
+} from '../types';
 import { 
   UploadCloud, 
   FileSpreadsheet, 
   CheckCircle2, 
   AlertCircle, 
-  HelpCircle, 
-  ArrowRight, 
   CheckSquare, 
-  Square 
+  Square,
+  FileCheck,
+  Building2,
+  Landmark,
+  X,
+  CreditCard,
+  FileUp
 } from 'lucide-react';
 
 export const ImportacionesView: React.FC = () => {
   const [planillas, setPlanillas] = useState<PlanillaListItem[]>([]);
+  const [tiposDescuento, setTiposDescuento] = useState<TipoDescuento[]>([]);
   const [selectedVersionId, setSelectedVersionId] = useState<number | null>(null);
   const [selectedConceptoId, setSelectedConceptoId] = useState<number>(1);
   const [file, setFile] = useState<File | null>(null);
   const [uploading, setUploading] = useState(false);
-  const [importacionData, setImportacionData] = useState<any | null>(null);
+  const [importacionData, setImportacionData] = useState<ImportacionDetalle | null>(null);
   const [modalidad, setModalidad] = useState<'ACTUALIZAR' | 'REEMPLAZAR'>('ACTUALIZAR');
   const [applying, setApplying] = useState(false);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
-
-  const conceptos = [
-    { id: 1, codigo: 'PICHINCHA', nombre: 'Banco Pichincha' },
-    { id: 2, codigo: 'SULLANA', nombre: 'Caja Sullana' },
-    { id: 3, codigo: 'SUBCAFAE', nombre: 'SUB-CAFAE Chepén' },
-    { id: 4, codigo: 'BRENTA', nombre: 'BRENTA' },
-    { id: 5, codigo: 'SITRASE', nombre: 'SITRASE' },
-    { id: 6, codigo: 'FENTASE', nombre: 'SITASE / FENTASE' },
-    { id: 7, codigo: 'OTROS', nombre: 'Otros Descuentos' },
-  ];
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   useEffect(() => {
-    const fetchPlanillas = async () => {
+    const fetchInitialData = async () => {
       try {
-        const list = await apiRequest<PlanillaListItem[]>('/api/planillas');
+        const [list, tipos] = await Promise.all([
+          apiRequest<PlanillaListItem[]>('/api/planillas'),
+          apiRequest<TipoDescuento[]>('/api/catalogos/tipos-descuento'),
+        ]);
         const openList = list.filter((p) => p.version_estado !== 'CERRADA');
         setPlanillas(openList);
+        setTiposDescuento(tipos);
         if (openList.length > 0) {
           setSelectedVersionId(openList[0].version_id);
         }
       } catch (err) {
-        console.error('Error fetching planillas:', err);
+        setErrorMsg(mensajeDeError(err, 'Error al cargar las planillas abiertas.'));
       }
     };
-    fetchPlanillas();
+    fetchInitialData();
   }, []);
+
+  const currentPlanilla = planillas.find((p) => p.version_id === selectedVersionId);
+
+  const conceptos = tiposDescuento
+    .filter((td) => {
+      if (!td.activo) return false;
+      if (!currentPlanilla) return true;
+      return currentPlanilla.tipo === 'IIEE' ? td.aplica_iiee : td.aplica_sede;
+    })
+    .sort((a, b) => a.orden - b.orden);
+
+  useEffect(() => {
+    if (conceptos.length > 0) {
+      if (!conceptos.some((c) => c.id === selectedConceptoId)) {
+        setSelectedConceptoId(conceptos[0].id);
+      }
+    }
+  }, [selectedVersionId, tiposDescuento]);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
       setFile(e.target.files[0]);
+      setErrorMsg(null);
     }
   };
 
@@ -61,22 +86,23 @@ export const ImportacionesView: React.FC = () => {
 
     setUploading(true);
     setSuccessMsg(null);
+    setErrorMsg(null);
     try {
       const formData = new FormData();
       formData.append('version_id', String(selectedVersionId));
       formData.append('tipo_descuento_id', String(selectedConceptoId));
       formData.append('archivo', file);
 
-      const res = await apiRequest('/api/importaciones/procesar', {
+      const res = await apiRequest<RespuestaProcesarImportacion>('/api/importaciones/procesar', {
         method: 'POST',
         body: formData,
       });
 
       // Cargar detalle clasificado
-      const detalle = await apiRequest(`/api/importaciones/${res.resumen.importacion_id}`);
+      const detalle = await apiRequest<ImportacionDetalle>(`/api/importaciones/${res.resumen.importacion_id}`);
       setImportacionData(detalle);
-    } catch (err: any) {
-      alert(err.message || 'Error al procesar el archivo Excel.');
+    } catch (err) {
+      setErrorMsg(mensajeDeError(err, 'Error al procesar el archivo Excel.'));
     } finally {
       setUploading(false);
     }
@@ -94,14 +120,14 @@ export const ImportacionesView: React.FC = () => {
       });
 
       // Actualizar estado local
-      setImportacionData((prev: any) => ({
+      setImportacionData((prev) => prev ? ({
         ...prev,
-        filas: prev.filas.map((f: any) =>
+        filas: prev.filas.map((f) =>
           f.fila === filaNum ? { ...f, seleccionado: !currentSelected } : f
         ),
-      }));
-    } catch (err: any) {
-      alert(err.message || 'Error al modificar selección de la fila.');
+      }) : prev);
+    } catch (err) {
+      alert(mensajeDeError(err, 'Error al modificar selección de la fila.'));
     }
   };
 
@@ -109,40 +135,86 @@ export const ImportacionesView: React.FC = () => {
     if (!importacionData) return;
     setApplying(true);
     try {
-      const res = await apiRequest(`/api/importaciones/${importacionData.resumen.id}/aplicar`, {
+      const res = await apiRequest<{ ok: boolean; mensaje: string }>(`/api/importaciones/${importacionData.resumen.id}/aplicar`, {
         method: 'POST',
         body: JSON.stringify({
           modalidad,
           revision_esperada: importacionData.resumen.revision_edicion || 1,
         }),
       });
-      setSuccessMsg(res.mensaje || 'Descuentos aplicados correctamente.');
+      setSuccessMsg(res.mensaje || 'Descuentos aplicados correctamente a la planilla activa.');
       setImportacionData(null);
       setFile(null);
-    } catch (err: any) {
-      alert(err.message || 'Error al aplicar descuentos a la planilla.');
+    } catch (err) {
+      alert(mensajeDeError(err, 'Error al aplicar descuentos a la planilla.'));
     } finally {
       setApplying(false);
     }
   };
 
+  const getFormatSize = (bytes?: number) => {
+    if (!bytes) return '';
+    return `${(bytes / 1024).toFixed(1)} KB`;
+  };
+
   return (
     <div className="page-container">
-      {/* Selector y Carga */}
+      {/* Encabezado */}
+      <div style={{ marginBottom: '1.75rem' }}>
+        <span style={{ fontSize: '0.725rem', fontWeight: 700, color: '#2563EB', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+          Carga Masiva Asistida
+        </span>
+        <h2 style={{ fontSize: '1.35rem', marginTop: '0.15rem', marginBottom: '0.2rem', color: '#0F172A', fontWeight: 800 }}>
+          Asistente de Importación de Descuentos Excel
+        </h2>
+        <p style={{ fontSize: '0.85rem', color: '#64748B', margin: 0 }}>
+          Procesamiento automático de listas de descuentos bancarios, cuotas gremiales y retenciones de ley.
+        </p>
+      </div>
+
+      {successMsg && (
+        <div style={{
+          background: '#ECFDF5',
+          border: '1.5px solid #A7F3D0',
+          padding: '0.95rem 1.25rem',
+          borderRadius: 'var(--radius-md)',
+          color: '#065F46',
+          marginBottom: '1.5rem',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '0.65rem'
+        }}>
+          <CheckCircle2 size={18} style={{ color: '#059669', flexShrink: 0 }} />
+          <span style={{ fontSize: '0.875rem', fontWeight: 600 }}>{successMsg}</span>
+        </div>
+      )}
+
+      {errorMsg && (
+        <div style={{
+          background: '#FEF2F2',
+          border: '1.5px solid #FECACA',
+          padding: '0.95rem 1.25rem',
+          borderRadius: 'var(--radius-md)',
+          color: '#991B1B',
+          marginBottom: '1.5rem',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '0.65rem'
+        }}>
+          <AlertCircle size={18} style={{ color: '#DC2626', flexShrink: 0 }} />
+          <span style={{ fontSize: '0.875rem', fontWeight: 500 }}>{errorMsg}</span>
+        </div>
+      )}
+
+      {/* Tarjeta de Configuración y Carga */}
       <div className="card" style={{ marginBottom: '2rem' }}>
-        <h2 style={{ fontSize: '1.25rem', marginBottom: '1.25rem' }}>Importar Descuentos desde Excel</h2>
-
-        {successMsg && (
-          <div style={{ background: 'rgba(16, 185, 129, 0.15)', border: '1px solid var(--emerald-500)', padding: '0.85rem', borderRadius: 'var(--radius-md)', color: '#34D399', marginBottom: '1.25rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-            <CheckCircle2 size={18} />
-            <span>{successMsg}</span>
-          </div>
-        )}
-
         <form onSubmit={handleUpload}>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '1.25rem', marginBottom: '1.5rem' }}>
+            {/* Planilla Destino */}
             <div className="form-group">
-              <label className="form-label">Planilla Destino (Solo versiones abiertas)</label>
+              <label className="form-label">
+                Planilla Abierta de Destino *
+              </label>
               <select
                 className="form-select"
                 value={selectedVersionId || ''}
@@ -161,8 +233,11 @@ export const ImportacionesView: React.FC = () => {
               </select>
             </div>
 
+            {/* Concepto de Descuento */}
             <div className="form-group">
-              <label className="form-label">Concepto de Descuento</label>
+              <label className="form-label">
+                Concepto de Descuento Institucional *
+              </label>
               <select
                 className="form-select"
                 value={selectedConceptoId}
@@ -177,23 +252,40 @@ export const ImportacionesView: React.FC = () => {
             </div>
           </div>
 
-          {/* Zona de Subida de Archivo */}
+          {/* Zona Drag & Drop Elegante */}
           <div style={{
-            border: '2px dashed #CBD5E1',
+            border: file ? '2px solid #2563EB' : '2px dashed #CBD5E1',
             borderRadius: 'var(--radius-lg)',
-            padding: '2rem',
+            padding: '2.5rem 1.5rem',
             textAlign: 'center',
-            background: '#F8FAFC',
+            background: file ? '#F0F9FF' : '#F8FAFC',
             marginBottom: '1.5rem',
             position: 'relative',
+            transition: 'all var(--transition-fast)',
+            cursor: 'pointer'
           }}>
-            <UploadCloud size={40} style={{ color: 'var(--teal-500)', marginBottom: '0.75rem' }} />
-            <h3 style={{ fontSize: '1.05rem', marginBottom: '0.25rem' }}>
-              {file ? file.name : 'Arrastra o selecciona el archivo Excel (.xlsx)'}
+            <div style={{
+              width: 52,
+              height: 52,
+              borderRadius: 'var(--radius-full)',
+              background: file ? '#DBEAFE' : '#EFF6FF',
+              color: '#1D4ED8',
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              marginBottom: '0.85rem'
+            }}>
+              {file ? <FileSpreadsheet size={26} /> : <UploadCloud size={26} />}
+            </div>
+
+            <h3 style={{ fontSize: '1.05rem', marginBottom: '0.35rem', color: '#0F172A', fontWeight: 700 }}>
+              {file ? file.name : 'Arrastra o selecciona el archivo Excel de descuentos'}
             </h3>
-            <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-              El sistema identificará automáticamente las columnas de DNI y Monto.
+            <p style={{ fontSize: '0.8rem', color: '#64748B', maxWidth: '420px', margin: '0 auto' }}>
+              Formatos aceptados: .xlsx o .xls. El motor identificará automáticamente las columnas de DNI y Monto.
+              {file && <span style={{ display: 'block', marginTop: '0.35rem', color: '#2563EB', fontWeight: 600 }}>Tamaño: {getFormatSize(file.size)}</span>}
             </p>
+
             <input
               type="file"
               accept=".xlsx,.xls"
@@ -202,9 +294,24 @@ export const ImportacionesView: React.FC = () => {
             />
           </div>
 
-          <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-            <button type="submit" className="btn btn-primary" disabled={!file || !selectedVersionId || uploading}>
-              {uploading ? 'Procesando archivo...' : 'Analizar y Previsualizar'}
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem' }}>
+            {file && (
+              <button 
+                type="button" 
+                onClick={() => setFile(null)} 
+                className="btn btn-secondary btn-sm"
+              >
+                Quitar Archivo
+              </button>
+            )}
+            <button 
+              type="submit" 
+              className="btn btn-primary" 
+              disabled={!file || !selectedVersionId || uploading}
+              style={{ fontWeight: 700 }}
+            >
+              <FileUp size={16} />
+              <span>{uploading ? 'Analizando estructura Excel...' : 'Analizar y Previsualizar'}</span>
             </button>
           </div>
         </form>
@@ -213,81 +320,105 @@ export const ImportacionesView: React.FC = () => {
       {/* Previsualización de Registros Clasificados */}
       {importacionData && (
         <div className="card">
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '1rem', marginBottom: '1.5rem' }}>
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            flexWrap: 'wrap',
+            gap: '1rem',
+            marginBottom: '1.25rem',
+            borderBottom: '1px solid #E2E8F0',
+            paddingBottom: '1.15rem'
+          }}>
             <div>
-              <h2 style={{ fontSize: '1.25rem', marginBottom: '0.25rem' }}>Registros Extraídos</h2>
-              <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                {importacionData.resumen.archivo_nombre} • {importacionData.filas.length} filas detectadas
-              </span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.2rem' }}>
+                <span className="badge badge-indigo">Resultado del Análisis</span>
+                <span style={{ fontSize: '0.8rem', color: '#64748B' }}>
+                  {importacionData.filas.length} registros detectados
+                </span>
+              </div>
+              <h3 style={{ fontSize: '1.2rem', color: '#0F172A', fontWeight: 800, margin: 0 }}>
+                {importacionData.resumen.archivo_nombre}
+              </h3>
             </div>
 
-            {/* Modalidad y Botón de Aplicar */}
+            {/* Modalidad de Aplicación y Botón Confirmar */}
             <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', background: 'var(--bg-input)', padding: '0.25rem', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-subtle)' }}>
+              <div className="segmented-control">
                 <button
                   type="button"
                   onClick={() => setModalidad('ACTUALIZAR')}
-                  className={`btn btn-sm ${modalidad === 'ACTUALIZAR' ? 'btn-primary' : 'btn-ghost'}`}
+                  className={`segmented-item ${modalidad === 'ACTUALIZAR' ? 'active' : ''}`}
                 >
-                  ACTUALIZAR (Solo seleccionadas)
+                  <span>ACTUALIZAR (Solo seleccionados)</span>
                 </button>
                 <button
                   type="button"
                   onClick={() => setModalidad('REEMPLAZAR')}
-                  className={`btn btn-sm ${modalidad === 'REEMPLAZAR' ? 'btn-danger' : 'btn-ghost'}`}
+                  className={`segmented-item ${modalidad === 'REEMPLAZAR' ? 'active' : ''}`}
+                  style={{ color: modalidad === 'REEMPLAZAR' ? '#DC2626' : undefined }}
                 >
-                  REEMPLAZAR (Limpia y aplica)
+                  <span>REEMPLAZAR (Limpia y aplica)</span>
                 </button>
               </div>
 
-              <button onClick={handleAplicar} disabled={applying} className="btn btn-success">
-                {applying ? 'Aplicando...' : 'Aplicar a Planilla'}
+              <button 
+                onClick={handleAplicar} 
+                disabled={applying} 
+                className="btn btn-success"
+                style={{ fontWeight: 700 }}
+              >
+                <FileCheck size={16} />
+                <span>{applying ? 'Aplicando a nómina...' : 'Aplicar a Planilla'}</span>
               </button>
             </div>
           </div>
 
           {/* Grilla Clasificada */}
           <div className="table-container" style={{ maxHeight: '55vh' }}>
-            <table className="table" style={{ fontSize: '0.8rem' }}>
+            <table className="table">
               <thead style={{ position: 'sticky', top: 0, zIndex: 10 }}>
                 <tr>
-                  <th style={{ width: 40 }}>Sel.</th>
-                  <th>Fila</th>
-                  <th>DNI Original</th>
+                  <th style={{ width: 45, textAlign: 'center' }}>Sel.</th>
+                  <th style={{ width: 50, textAlign: 'center' }}>Fila</th>
+                  <th style={{ width: 95 }}>DNI Archivo</th>
                   <th>Nombre en Archivo</th>
-                  <th style={{ textAlign: 'right' }}>Monto</th>
-                  <th>Estado DNI</th>
-                  <th>Trabajador Vinculado</th>
+                  <th style={{ textAlign: 'right', width: 110 }}>Monto</th>
+                  <th style={{ width: 120, textAlign: 'center' }}>Estado DNI</th>
+                  <th>Servidor Vinculado en Planilla</th>
                   <th>Observación</th>
                 </tr>
               </thead>
               <tbody>
-                {importacionData.filas.map((f: any) => {
+                {importacionData.filas.map((f) => {
                   const isSelectable = f.estado === 'IDENTIFICADO' || f.estado === 'REVISAR';
                   return (
-                    <tr key={f.fila} style={{ opacity: f.seleccionado ? 1 : 0.6 }}>
-                      <td>
+                    <tr key={f.fila} style={{ opacity: f.seleccionado ? 1 : 0.55 }}>
+                      <td style={{ textAlign: 'center' }}>
                         <button
                           type="button"
                           onClick={() => handleToggleFila(f.fila, f.seleccionado)}
                           className="btn btn-ghost btn-sm"
                           style={{ padding: '0.2rem' }}
                           disabled={!isSelectable}
+                          title={f.seleccionado ? 'Deseleccionar fila' : 'Seleccionar fila'}
                         >
                           {f.seleccionado ? (
-                            <CheckSquare size={16} style={{ color: 'var(--teal-500)' }} />
+                            <CheckSquare size={17} style={{ color: '#1D4ED8' }} />
                           ) : (
-                            <Square size={16} style={{ color: 'var(--text-muted)' }} />
+                            <Square size={17} style={{ color: '#94A3B8' }} />
                           )}
                         </button>
                       </td>
-                      <td style={{ color: 'var(--text-muted)' }}>{f.fila}</td>
-                      <td className="mono-amount">{f.dni_original || '—'}</td>
-                      <td>{f.nombre_original || '—'}</td>
-                      <td className="mono-amount" style={{ textAlign: 'right', fontWeight: 600 }}>
+                      <td style={{ color: '#64748B', textAlign: 'center' }}>{f.fila}</td>
+                      <td className="mono-amount" style={{ fontWeight: 600, color: '#0F172A' }}>
+                        {f.dni_original || '—'}
+                      </td>
+                      <td style={{ color: '#334155' }}>{f.nombre_original || '—'}</td>
+                      <td className="mono-amount" style={{ textAlign: 'right', fontWeight: 700, color: '#DC2626' }}>
                         S/ {Number(f.monto_validado || f.monto_original || 0).toFixed(2)}
                       </td>
-                      <td>
+                      <td style={{ textAlign: 'center' }}>
                         <span className={`badge ${
                           f.estado === 'IDENTIFICADO' ? 'badge-emerald' :
                           f.estado === 'REVISAR' ? 'badge-amber' :
@@ -296,8 +427,12 @@ export const ImportacionesView: React.FC = () => {
                           {f.estado}
                         </span>
                       </td>
-                      <td>{f.trabajador_apellidos ? `${f.trabajador_apellidos}, ${f.trabajador_nombres}` : '—'}</td>
-                      <td style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{f.observacion || '—'}</td>
+                      <td style={{ fontWeight: 600, color: '#0F172A' }}>
+                        {f.trabajador_apellidos ? `${f.trabajador_apellidos}, ${f.trabajador_nombres}` : '—'}
+                      </td>
+                      <td style={{ fontSize: '0.775rem', color: '#64748B' }}>
+                        {f.observacion || '—'}
+                      </td>
                     </tr>
                   );
                 })}

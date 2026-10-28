@@ -51,6 +51,49 @@ Toda respuesta `4xx`/`5xx` usa `application/problem+json` (RFC 9457):
 | `VALIDACION` | 422 | Campos inválidos o faltantes |
 | `ERROR_INTERNO` | 500 | Fallo no clasificado; nunca expone `str(exc)` |
 
+## Listados paginados
+
+Todo listado que crece sin techo (`auditoria`, y a medida que se migren los
+demás) devuelve el sobre `Pagina[T]` de `cafae/api/schemas.py` en lugar de un
+arreglo suelto:
+
+```json
+{
+  "items": [ { "id": 812, "accion": "UPDATE", "...": "..." } ],
+  "total": 1432,
+  "limite": 100,
+  "desplazamiento": 0
+}
+```
+
+| Campo | Uso |
+| --- | --- |
+| `items` | Filas de la página pedida. |
+| `total` | Total de filas que cumplen el filtro (para dibujar el paginador). |
+| `limite` | Tamaño de página efectivo; `1..500`. |
+| `desplazamiento` | Filas saltadas; `>= 0`. |
+
+Parámetros de query: `limite` (default `100`, máximo `500`) y `desplazamiento`
+(default `0`). El orden es estable y descendente por `fecha_hora DESC, id DESC`,
+de modo que dos páginas consecutivas no repiten filas.
+
+### `GET /api/auditoria`
+
+`response_model=Pagina[EventoAuditoria]`. Filtros opcionales: `entidad`,
+`usuario_id`, `accion` (ILIKE), `resultado`. Solo `ADMINISTRADOR`.
+`correlacion` se publica como cadena, aunque en la base sea `UUID`.
+
+El registro es append-only: `total` solo crece. El cliente no debe descargar la
+tabla completa ni paginar en memoria; pide página por página.
+
+### Listados que todavía no usan el sobre
+
+Los catálogos y las planillas siguen devolviendo arreglos (su volumen está
+acotado por el maestro) y el frontend los pagina en el cliente con
+`frontend/src/hooks/usePaginacion.ts`. Cuando un listado deje de estar acotado,
+migra al sobre `Pagina[T]` **sin** romper retrocompatibilidad: se agrega un
+parámetro y se publica un endpoint nuevo, o se espera a `/api/v2`.
+
 ## Concurrencia y `revision_edicion`
 
 `planilla_versiones.revision_edicion` es un contador monótono. **Se incrementa
@@ -104,6 +147,31 @@ un prefijo `/api/v2`, los cambios se mantienen **retrocompatibles**:
 - renombrar o quitar campos, cambiar status o códigos: requiere nueva versión
   de prefijo y ventana de convivencia.
 
+## Consumo desde el cliente
+
+`frontend/src/api/client.ts` y `frontend/src/api/errors.ts` implementan el
+contrato y son la única puerta de entrada a la API:
+
+- `apiRequest<T>(path, options)` exige el tipo en el punto de llamada y **no**
+  devuelve `any`; el valor por defecto es `unknown` para que ningún resultado
+  entre a la UI sin declaración explícita.
+- Toda respuesta fallida se convierte en `ApiError`, con `status`, `code`,
+  `title`, `instance` y `erroresDeCampo`. La UI ramifica por `code`
+  (`err.esConflictoDeRevision`), nunca por el texto de `detail`.
+- `mensajeDeError(err, fallback)` devuelve siempre un string listo para mostrar.
+- Respuestas `401` cierran la sesión y redirigen a `#/login` en un solo lugar.
+- El cliente tolera respuestas legacy `{ "detail": "..." }` y cuerpos de texto
+  plano (documentos) construyendo un `ApiError` sintético con el catálogo por
+  status; `application/problem+json` siempre tiene prioridad.
+
+### Pendiente conocido
+
+`frontend/src/views/ReportesView.tsx` conserva **un** `any` documentado en
+`reportData`: los nueve reportes devuelven formas distintas y todavía no tienen
+modelo en `cafae/api/schemas.py`. Se tipará por reporte cuando el backend
+publique esos esquemas; mientras tanto es el único `any` del frontend y está
+marcado con su motivo.
+
 ## Verificación
 
 ```powershell
@@ -112,5 +180,6 @@ python scripts/test_seguridad.py # permisos, Bearer y bloqueo D.5
 ```
 
 El test de contrato falla si un endpoint deja de documentar el sobre de error,
-si `POST /api/planillas` pierde `revision_edicion` o si el modelo `Problem`
-cambia sus claves obligatorias.
+si `POST /api/planillas` pierde `revision_edicion`, si `GET /api/auditoria`
+deja de publicar `Pagina[T]`, o si un router limpio vuelve a capturar
+`UserError` en lugar de dejarlo al handler global.

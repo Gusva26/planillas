@@ -2,10 +2,14 @@
 
 No requiere base de datos: valida el contrato que consume el frontend.
 """
+import ast
 import asyncio
+import importlib
+import inspect
 import json
 import sys
 import unittest
+from pathlib import Path
 
 sys.path.insert(0, '/app')
 
@@ -193,6 +197,61 @@ class EsquemaOpenAPI(unittest.TestCase):
             mensaje='ok',
         )
         self.assertEqual(respuesta.model_dump()['planilla']['revision_edicion'], 4)
+
+
+class PaginacionDeListados(unittest.TestCase):
+    """Los listados que crecen sin techo usan el sobre `Pagina[T]`."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.spec = app.openapi()
+
+    def test_auditoria_declara_el_sobre_paginado(self):
+        respuesta = self.spec['paths']['/api/auditoria']['get']['responses']['200']
+        ref = respuesta['content']['application/json']['schema']['$ref']
+        nombre = ref.rsplit('/', 1)[-1]
+        esquema = self.spec['components']['schemas'][nombre]
+        self.assertEqual(
+            set(esquema['required']),
+            {'items', 'total', 'limite', 'desplazamiento'},
+        )
+
+    def test_auditoria_acepta_limite_y_desplazamiento(self):
+        parametros = {
+            p['name']: p
+            for p in self.spec['paths']['/api/auditoria']['get']['parameters']
+        }
+        self.assertEqual(parametros['limite']['schema']['maximum'], 500)
+        self.assertEqual(parametros['limite']['schema']['default'], 100)
+        self.assertEqual(parametros['desplazamiento']['schema']['minimum'], 0)
+
+
+class ManejoDeErroresEnRutas(unittest.TestCase):
+    """El mapeo `UserError` → 400 vive en el handler global, no en cada ruta."""
+
+    RUTAS = [
+        'routes_planillas',
+        'routes_importaciones',
+        'routes_documentos',
+        'routes_auditoria',
+    ]
+
+    def test_los_routers_no_repiten_el_mapeo_de_user_error(self):
+        for nombre in self.RUTAS:
+            with self.subTest(router=nombre):
+                modulo = importlib.import_module(f'cafae.api.{nombre}')
+                arbol = ast.parse(Path(inspect.getfile(modulo)).read_text(encoding='utf-8'))
+                capturas = [
+                    nodo
+                    for nodo in ast.walk(arbol)
+                    if isinstance(nodo, ast.ExceptHandler)
+                    and isinstance(nodo.type, ast.Name)
+                    and nodo.type.id == 'UserError'
+                ]
+                self.assertEqual(
+                    capturas, [],
+                    f'{nombre} captura UserError: el handler global ya lo traduce.',
+                )
 
 
 if __name__ == '__main__':

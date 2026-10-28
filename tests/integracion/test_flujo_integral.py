@@ -104,10 +104,14 @@ class TestFlujoIntegral(unittest.TestCase):
         row_t1 = detalles[0]['id']
 
         # Cada inserción de hijos (detalle, descuentos, firmas) ejecuta
-        # bloquear_edicion() y sube revision_edicion. Un cliente debe releerla
-        # antes de editar: el valor del INSERT inicial ya está obsoleto.
-        revision_actual = PLAN.get_planilla_version(token_operador, p_id)['revision_edicion']
+        # bloquear_edicion() y sube revision_edicion. El contrato de creación
+        # ya devuelve la revisión vigente: el cliente no debe asumir 1.
+        revision_actual = pln_iiee['revision_edicion']
         self.assertGreater(revision_actual, 1)
+        self.assertEqual(
+            revision_actual,
+            PLAN.get_planilla_version(token_operador, p_id)['revision_edicion'],
+        )
 
         PLAN.guardar_edicion_lote(token_operador, v1_id, revision_esperada=revision_actual, cambios=[{
             'detalle_id': row_t1,
@@ -171,9 +175,19 @@ class TestFlujoIntegral(unittest.TestCase):
         self.assertEqual(rep_resumen['total_importe'], Decimal('1350.00'))
         self.assertEqual(rep_resumen['total_neto'], Decimal('965.00'))
 
-        # 10. Consultar auditoría administrativa
-        eventos = AUD.list_eventos(self.admin_token)
-        self.assertGreater(len(eventos), 0)
+        # 10. Consultar auditoría administrativa (listado paginado)
+        pagina = AUD.list_eventos(self.admin_token)
+        self.assertEqual(
+            set(pagina), {'items', 'total', 'limite', 'desplazamiento'}
+        )
+        self.assertGreater(pagina['total'], 0)
+        self.assertEqual(len(pagina['items']), min(pagina['limite'], pagina['total']))
+
+        primera = AUD.list_eventos(self.admin_token, limite=1)
+        segunda = AUD.list_eventos(self.admin_token, limite=1, desplazamiento=1)
+        self.assertEqual(len(primera['items']), 1)
+        self.assertEqual(primera['total'], pagina['total'])
+        self.assertNotEqual(primera['items'][0]['id'], segunda['items'][0]['id'])
 
 
 if __name__ == '__main__':

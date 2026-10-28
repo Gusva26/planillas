@@ -1,6 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { apiRequest, downloadFile, previewPdfInTab } from '../api/client';
-import { PlanillaListItem, LineaPlanilla } from '../types';
+import { mensajeDeError } from '../api/errors';
+import { usePaginacion } from '../hooks/usePaginacion';
+import { useAuth } from '../context/AuthContext';
+import { PlanillaListItem, LineaPlanilla, VersionDetalle } from '../types';
 import { Pagination } from '../components/Pagination';
 import { 
   FileText, 
@@ -8,13 +11,14 @@ import {
   Download, 
   Printer, 
   Search, 
-  UserCheck, 
   Layers, 
-  Lock, 
   CheckCircle2, 
   Clock, 
-  ExternalLink,
-  Calendar
+  Calendar,
+  Landmark,
+  Building2,
+  X,
+  FileCheck
 } from 'lucide-react';
 
 const MESES = [
@@ -33,6 +37,9 @@ const MESES = [
 ];
 
 export const DocumentosView: React.FC = () => {
+  const { user } = useAuth();
+  // ADR-006: la emisión de documentos exige el permiso generar_documentos.
+  const puedeGenerar = user?.rol === 'ADMINISTRADOR' || user?.rol === 'PLANILLAS';
   const [planillas, setPlanillas] = useState<PlanillaListItem[]>([]);
   const [tipoFiltro, setTipoFiltro] = useState<'IIEE' | 'SEDE'>('IIEE');
   const [selectedAnio, setSelectedAnio] = useState<number>(2026);
@@ -43,11 +50,8 @@ export const DocumentosView: React.FC = () => {
   const [downloading, setDownloading] = useState<string | null>(null);
   const [searchDni, setSearchDni] = useState('');
   const [directDni, setDirectDni] = useState('');
+  const [tipoTxBanco, setTipoTxBanco] = useState<'041' | '341'>('041');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
-
-  // Paginación
-  const [currentPage, setCurrentPage] = useState<number>(1);
-  const [pageSize, setPageSize] = useState<number>(15);
 
   // 1. Cargar planillas disponibles
   useEffect(() => {
@@ -55,8 +59,8 @@ export const DocumentosView: React.FC = () => {
       try {
         const list = await apiRequest<PlanillaListItem[]>('/api/planillas');
         setPlanillas(list);
-      } catch (err: any) {
-        setErrorMsg(err.message || 'Error al cargar lista de planillas.');
+      } catch (err) {
+        setErrorMsg(mensajeDeError(err, 'Error al cargar lista de planillas.'));
       }
     };
     fetchPlanillas();
@@ -81,10 +85,10 @@ export const DocumentosView: React.FC = () => {
       setLoadingLineas(true);
       setErrorMsg(null);
       try {
-        const data = await apiRequest(`/api/planillas/versiones/${selectedPlanilla.version_id}`);
+        const data = await apiRequest<VersionDetalle>(`/api/planillas/versiones/${selectedPlanilla.version_id}`);
         setLineas(data.lineas || []);
-      } catch (err: any) {
-        setErrorMsg(err.message || 'Error al obtener personal de la planilla.');
+      } catch (err) {
+        setErrorMsg(mensajeDeError(err, 'Error al obtener personal de la planilla.'));
       } finally {
         setLoadingLineas(false);
       }
@@ -93,22 +97,13 @@ export const DocumentosView: React.FC = () => {
     fetchDetalle();
   }, [selectedPlanilla]);
 
-  useEffect(() => {
-    setCurrentPage(1);
-  }, [selectedPlanilla, searchDni]);
-
-  // Manejo de cambio de tipo IIEE vs SEDE
-  const handleCambiarTipo = (tipo: 'IIEE' | 'SEDE') => {
-    setTipoFiltro(tipo);
-  };
-
   const handleDownload = async (type: string, path: string, filename: string) => {
     setDownloading(type);
     setErrorMsg(null);
     try {
       await downloadFile(path, filename);
-    } catch (err: any) {
-      setErrorMsg(err.message || 'Error al descargar documento.');
+    } catch (err) {
+      setErrorMsg(mensajeDeError(err, 'Error al descargar documento.'));
     } finally {
       setDownloading(null);
     }
@@ -119,12 +114,12 @@ export const DocumentosView: React.FC = () => {
     const vId = selectedPlanilla.version_id;
     try {
       await previewPdfInTab(`/api/documentos/boleta-dni/${vId}/${dni}`);
-    } catch (err: any) {
-      alert(err.message || `Error al visualizar la boleta del DNI ${dni}`);
+    } catch (err) {
+      alert(mensajeDeError(err, `Error al visualizar la boleta del DNI ${dni}`));
     }
   };
 
-  const handleDescargarBoleta = async (dni: string, apellidos: string) => {
+  const handleDescargarBoleta = async (dni: string) => {
     if (!selectedPlanilla) return;
     const vId = selectedPlanilla.version_id;
     const tag = `${dni}_${selectedPlanilla.anio}_${String(selectedPlanilla.mes).padStart(2, '0')}`;
@@ -143,65 +138,86 @@ export const DocumentosView: React.FC = () => {
     handleImprimirBoleta(clean);
   };
 
-  // Obtener lista de años únicos disponibles en las planillas (con default a 2026)
   const aniosDisponibles = Array.from(new Set([2026, ...planillas.map((p) => p.anio)])).sort((a, b) => b - a);
-
   const vId = selectedPlanilla?.version_id;
   const pTag = selectedPlanilla 
     ? `${selectedPlanilla.tipo}_${selectedPlanilla.anio}_${String(selectedPlanilla.mes).padStart(2, '0')}_v${selectedPlanilla.version_numero}` 
     : '';
 
-  // Filtro de trabajadores en la tabla
   const lineasFiltradas = lineas.filter((l) => {
     if (!searchDni.trim()) return true;
     const q = searchDni.toLowerCase().trim();
     return l.dni.includes(q) || l.apellidos.toLowerCase().includes(q) || l.nombres.toLowerCase().includes(q);
   });
 
+  const paginacion = usePaginacion(lineasFiltradas, { tamanoInicial: 15 });
+
+  // Al cambiar de planilla o de búsqueda se vuelve a la primera página.
+  useEffect(() => {
+    paginacion.irAPagina(1);
+  }, [selectedPlanilla, searchDni]);
+
+  if (!puedeGenerar) {
+    return (
+      <div className="page-container">
+        <div className="card" style={{ padding: '2rem', textAlign: 'center' }}>
+          <h2 style={{ fontSize: '1.2rem', marginBottom: '0.5rem', color: '#0F172A', fontWeight: 800 }}>
+            Documentos oficiales restringidos
+          </h2>
+          <p style={{ fontSize: '0.9rem', color: '#64748B', margin: 0 }}>
+            Tu rol puede consultar planillas, pero la emisión de PDF, Excel, boletas y archivos
+            bancarios requiere el permiso <strong>generar_documentos</strong>. Solicitá la
+            habilitación a administración.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="page-container">
-      {/* 1. SELECCIÓN PREVIA: IIEE vs SEDE & FILTRO DE AÑO Y MES */}
-      <div className="card" style={{ marginBottom: '1.75rem', padding: '1.5rem 1.75rem' }}>
+      {/* 1. SELECCIÓN DE ÁMBITO Y PARÁMETROS */}
+      <div className="card" style={{ marginBottom: '1.75rem', padding: '1.25rem 1.5rem' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '1.25rem' }}>
           <div>
-            <span style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--teal-500)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-              Módulo de Emisión y Boletas de Pago CAFAE
+            <span style={{ fontSize: '0.725rem', fontWeight: 700, color: '#2563EB', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+              Expedición Institucional
             </span>
-            <h2 style={{ fontSize: '1.35rem', marginTop: '0.2rem', marginBottom: '0.25rem' }}>
-              Documentos Oficiales y Boletas Individuales
+            <h2 style={{ fontSize: '1.35rem', marginTop: '0.15rem', marginBottom: '0.2rem', color: '#0F172A', fontWeight: 800 }}>
+              Centro de Emisión de Boletas y Documentos Oficiales
             </h2>
-            <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', margin: 0 }}>
-              Selecciona el tipo de personal (II.EE. o SEDE), año y mes para generar reportes y boletas oficiales.
+            <p style={{ fontSize: '0.85rem', color: '#64748B', margin: 0 }}>
+              Generación de boletas individuales, planillas impresas, cuadernillos y archivos de pago para el Banco de la Nación.
             </p>
           </div>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.85rem', flexWrap: 'wrap' }}>
-            {/* Selector de Ámbito: IIEE vs SEDE */}
-            <div style={{ display: 'inline-flex', background: '#F1F5F9', padding: '0.25rem', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-color)', gap: '0.25rem' }}>
+            {/* Selector de Ámbito con SVG Icons */}
+            <div className="segmented-control">
               <button
                 type="button"
-                onClick={() => handleCambiarTipo('IIEE')}
-                className={`btn ${tipoFiltro === 'IIEE' ? 'btn-primary' : 'btn-ghost'}`}
-                style={{ padding: '0.45rem 1.1rem', fontSize: '0.85rem', fontWeight: 600, borderRadius: 'var(--radius-sm)' }}
+                onClick={() => setTipoFiltro('IIEE')}
+                className={`segmented-item ${tipoFiltro === 'IIEE' ? 'active' : ''}`}
               >
-                🏫 II.EE.
+                <Building2 size={15} />
+                <span>II.EE.</span>
               </button>
               <button
                 type="button"
-                onClick={() => handleCambiarTipo('SEDE')}
-                className={`btn ${tipoFiltro === 'SEDE' ? 'btn-primary' : 'btn-ghost'}`}
-                style={{ padding: '0.45rem 1.1rem', fontSize: '0.85rem', fontWeight: 600, borderRadius: 'var(--radius-sm)' }}
+                onClick={() => setTipoFiltro('SEDE')}
+                className={`segmented-item ${tipoFiltro === 'SEDE' ? 'active' : ''}`}
               >
-                🏢 SEDE
+                <Landmark size={15} />
+                <span>Sede Central</span>
               </button>
             </div>
 
             {/* Selector de Año */}
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
-              <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontWeight: 600 }}>Año:</span>
+              <span style={{ fontSize: '0.8rem', color: '#475569', fontWeight: 600 }}>Año:</span>
               <select
                 className="form-select"
-                style={{ width: '95px', fontWeight: 600 }}
+                style={{ width: '95px', fontWeight: 700 }}
                 value={selectedAnio}
                 onChange={(e) => setSelectedAnio(Number(e.target.value))}
               >
@@ -213,10 +229,10 @@ export const DocumentosView: React.FC = () => {
 
             {/* Selector de Mes */}
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
-              <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontWeight: 600 }}>Mes:</span>
+              <span style={{ fontSize: '0.8rem', color: '#475569', fontWeight: 600 }}>Mes:</span>
               <select
                 className="form-select"
-                style={{ minWidth: '175px', fontWeight: 600 }}
+                style={{ minWidth: '160px', fontWeight: 700 }}
                 value={selectedMes}
                 onChange={(e) => setSelectedMes(Number(e.target.value))}
               >
@@ -233,7 +249,7 @@ export const DocumentosView: React.FC = () => {
 
             {/* Estado de la versión seleccionada */}
             {selectedPlanilla && (
-              <span className={`badge ${selectedPlanilla.version_estado === 'CERRADA' ? 'badge-emerald' : 'badge-amber'}`} style={{ fontWeight: 600 }}>
+              <span className={`badge ${selectedPlanilla.version_estado === 'CERRADA' ? 'badge-emerald' : 'badge-amber'}`} style={{ fontWeight: 700 }}>
                 {selectedPlanilla.version_estado === 'CERRADA' ? <CheckCircle2 size={13} /> : <Clock size={13} />}
                 v{selectedPlanilla.version_numero} · {selectedPlanilla.version_estado}
               </span>
@@ -243,21 +259,39 @@ export const DocumentosView: React.FC = () => {
       </div>
 
       {errorMsg && (
-        <div style={{ background: 'rgba(239, 68, 68, 0.15)', border: '1px solid #EF4444', color: '#F87171', padding: '0.85rem 1.25rem', borderRadius: 'var(--radius-md)', marginBottom: '1.5rem', fontSize: '0.85rem' }}>
+        <div style={{
+          background: '#FEF2F2',
+          border: '1.5px solid #FECACA',
+          color: '#991B1B',
+          padding: '0.85rem 1.25rem',
+          borderRadius: 'var(--radius-md)',
+          marginBottom: '1.5rem',
+          fontSize: '0.85rem'
+        }}>
           {errorMsg}
         </div>
       )}
 
       {/* Si no existe planilla para el año/mes seleccionado */}
       {!selectedPlanilla && (
-        <div className="card" style={{ textAlign: 'center', padding: '3.5rem 2rem', marginTop: '1rem', border: '1px dashed var(--border-subtle)' }}>
-          <div style={{ width: 64, height: 64, borderRadius: '50%', background: 'rgba(20, 184, 166, 0.1)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', color: 'var(--teal-500)', marginBottom: '1.25rem' }}>
-            <Calendar size={32} />
+        <div className="card" style={{ textAlign: 'center', padding: '4rem 2rem', border: '1px dashed #CBD5E1' }}>
+          <div style={{
+            width: 58,
+            height: 58,
+            borderRadius: 'var(--radius-full)',
+            background: '#EFF6FF',
+            display: 'inline-flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            color: '#1D4ED8',
+            marginBottom: '1.25rem'
+          }}>
+            <Calendar size={28} />
           </div>
-          <h3 style={{ fontSize: '1.25rem', marginBottom: '0.5rem' }}>
-            No existe planilla de {tipoFiltro === 'IIEE' ? 'Instituciones Educativas' : 'Sede UGEL'} para {MESES.find((m) => m.num === selectedMes)?.nombre} {selectedAnio}
+          <h3 style={{ fontSize: '1.25rem', marginBottom: '0.35rem', color: '#0F172A', fontWeight: 800 }}>
+            Sin planilla disponible para {tipoFiltro === 'IIEE' ? 'Instituciones Educativas' : 'Sede UGEL'}
           </h3>
-          <p style={{ color: 'var(--text-muted)', maxWidth: '500px', margin: '0 auto', fontSize: '0.9rem' }}>
+          <p style={{ color: '#64748B', maxWidth: '480px', margin: '0 auto', fontSize: '0.875rem' }}>
             Seleccione otro año o mes en los filtros superiores para emitir boletas y reportes.
           </p>
         </div>
@@ -266,18 +300,33 @@ export const DocumentosView: React.FC = () => {
       {selectedPlanilla && (
         <>
           {/* 2. SECCIÓN PRINCIPAL: BÚSQUEDA Y EMISIÓN INDIVIDUAL DE BOLETAS POR DNI */}
-          <div className="card" style={{ marginBottom: '2rem', border: '1px solid #CBD5E1', background: '#FFFFFF' }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '1rem', marginBottom: '1.25rem', borderBottom: '1px solid #E2E8F0', paddingBottom: '1rem' }}>
+          <div className="card" style={{ marginBottom: '2.25rem', border: '1px solid #CBD5E1', background: '#FFFFFF' }}>
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              flexWrap: 'wrap',
+              gap: '1rem',
+              marginBottom: '1.25rem',
+              borderBottom: '1px solid #E2E8F0',
+              paddingBottom: '1.15rem'
+            }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                <div style={{ padding: '0.65rem', borderRadius: 'var(--radius-md)', background: '#EFF6FF', color: '#1D4ED8' }}>
-                  <Printer size={24} />
+                <div style={{
+                  padding: '0.65rem',
+                  borderRadius: 'var(--radius-md)',
+                  background: '#EFF6FF',
+                  color: '#1D4ED8',
+                  border: '1px solid #DBEAFE'
+                }}>
+                  <Printer size={22} />
                 </div>
                 <div>
                   <h3 style={{ fontSize: '1.15rem', margin: 0, fontWeight: 700, color: '#0F172A' }}>
                     Boletas de Pago Individuales (Formato Oficial UGEL Chepén)
                   </h3>
-                  <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                    Búsqueda por DNI o apellidos para visualización, impresión y descarga individualizada.
+                  <span style={{ fontSize: '0.8rem', color: '#64748B' }}>
+                    Emisión individualizada con desglose de descuentos de ley y firmas oficiales.
                   </span>
                 </div>
               </div>
@@ -291,104 +340,128 @@ export const DocumentosView: React.FC = () => {
                   maxLength={8}
                   value={directDni}
                   onChange={(e) => setDirectDni(e.target.value.replace(/\D/g, ''))}
-                  style={{ width: '190px', fontFamily: 'monospace', fontWeight: 600 }}
+                  style={{ width: '190px', fontFamily: 'var(--font-mono)', fontWeight: 700 }}
                 />
                 <button
                   type="submit"
                   disabled={directDni.length !== 8}
-                  className="btn btn-primary"
-                  style={{ whiteSpace: 'nowrap' }}
+                  className="btn btn-primary btn-sm"
+                  style={{ padding: '0.55rem 0.95rem' }}
                 >
-                  <Printer size={16} />
+                  <Printer size={15} />
                   <span>Imprimir Boleta</span>
                 </button>
               </form>
             </div>
 
-            {/* Barra de Búsqueda y Filtro de Lista */}
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1rem', flexWrap: 'wrap', gap: '0.75rem' }}>
-              <div style={{ position: 'relative', width: '360px' }}>
+            {/* Barra de Filtro de Lista */}
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              marginBottom: '1rem',
+              flexWrap: 'wrap',
+              gap: '0.75rem'
+            }}>
+              <div className="search-input-wrap" style={{ minWidth: '320px' }}>
                 <input
                   type="text"
                   className="form-input"
-                  placeholder="Filtrar por DNI, apellidos o nombres..."
+                  placeholder="Filtrar por DNI o apellidos..."
                   value={searchDni}
                   onChange={(e) => setSearchDni(e.target.value)}
-                  style={{ paddingLeft: '2.5rem' }}
                 />
-                <Search size={16} style={{ position: 'absolute', left: '0.9rem', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
+                <Search size={16} />
+                {searchDni && (
+                  <button
+                    type="button"
+                    onClick={() => setSearchDni('')}
+                    className="btn btn-ghost"
+                    style={{
+                      position: 'absolute',
+                      right: '0.4rem',
+                      top: '50%',
+                      transform: 'translateY(-50%)',
+                      padding: '0.25rem',
+                      color: '#94A3B8'
+                    }}
+                    title="Limpiar filtro"
+                  >
+                    <X size={14} />
+                  </button>
+                )}
               </div>
 
-              <div style={{ fontSize: '0.825rem', color: 'var(--text-muted)' }}>
-                Mostrando <strong style={{ color: 'var(--text-primary)' }}>{lineasFiltradas.length}</strong> de {lineas.length} trabajadores de {selectedPlanilla.tipo}
+              <div style={{ fontSize: '0.825rem', color: '#64748B' }}>
+                Mostrando <strong style={{ color: '#0F172A' }}>{lineasFiltradas.length}</strong> de {lineas.length} trabajadores en esta versión
               </div>
             </div>
 
             {/* Tabla de Trabajadores con Acciones de Boleta */}
-            <div className="table-container" style={{ maxHeight: '420px' }}>
-              <table className="table" style={{ fontSize: '0.8rem' }}>
+            <div className="table-container" style={{ maxHeight: '430px' }}>
+              <table className="table">
                 <thead style={{ position: 'sticky', top: 0, zIndex: 10 }}>
                   <tr>
-                    <th style={{ width: 45 }}>N°</th>
+                    <th style={{ width: 45, textAlign: 'center' }}>N°</th>
                     <th style={{ width: 95 }}>DNI</th>
                     <th>Apellidos y Nombres</th>
                     <th>Establecimiento / Adscripción</th>
                     <th>Cargo</th>
-                    <th style={{ textAlign: 'right', width: 110 }}>Líquido Neto</th>
+                    <th style={{ textAlign: 'right', width: 120 }}>Líquido Neto</th>
                     <th style={{ textAlign: 'center', width: 220 }}>Acciones Boleta</th>
                   </tr>
                 </thead>
                 <tbody>
                   {loadingLineas ? (
                     <tr>
-                      <td colSpan={7} style={{ textAlign: 'center', padding: '2rem', color: 'var(--text-muted)' }}>
-                        Cargando trabajadores de la planilla...
+                      <td colSpan={7} style={{ textAlign: 'center', padding: '2.5rem', color: '#64748B' }}>
+                        Cargando nómina de la planilla...
                       </td>
                     </tr>
                   ) : lineasFiltradas.length === 0 ? (
                     <tr>
-                      <td colSpan={7} style={{ textAlign: 'center', padding: '2rem', color: 'var(--text-muted)' }}>
-                        No se encontraron trabajadores que coincidan con la búsqueda.
+                      <td colSpan={7} style={{ textAlign: 'center', padding: '2.5rem', color: '#64748B' }}>
+                        No se encontraron servidores con el término de búsqueda.
                       </td>
                     </tr>
                   ) : (
-                    lineasFiltradas
-                      .slice((currentPage - 1) * pageSize, currentPage * pageSize)
-                      .map((t, idx) => (
+                    paginacion.items.map((t, idx) => (
                       <tr key={t.id}>
-                        <td style={{ color: 'var(--text-muted)' }}>{(currentPage - 1) * pageSize + idx + 1}</td>
-                        <td style={{ fontFamily: 'monospace', fontWeight: 600, color: 'var(--teal-500)' }}>
+                        <td style={{ color: '#64748B', textAlign: 'center' }}>
+                          {paginacion.desde + idx}
+                        </td>
+                        <td className="mono-amount" style={{ fontWeight: 700, color: '#1D4ED8' }}>
                           {t.dni}
                         </td>
-                        <td style={{ fontWeight: 600 }}>
+                        <td style={{ fontWeight: 700, color: '#0F172A' }}>
                           {t.apellidos} {t.nombres}
                         </td>
-                        <td style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                        <td style={{ fontSize: '0.775rem', color: '#475569' }}>
                           {t.institucion_nombre || t.area_nombre || 'UGEL CHEPÉN'}
                         </td>
-                        <td style={{ fontSize: '0.75rem' }}>
-                          {t.cargo}
+                        <td style={{ fontSize: '0.775rem', color: '#64748B' }}>
+                          {t.cargo || '—'}
                         </td>
-                        <td style={{ textAlign: 'right', fontFamily: 'monospace', fontWeight: 700, color: '#10B981' }}>
+                        <td className="mono-amount" style={{ textAlign: 'right', fontWeight: 800, color: Number(t.neto || 0) < 0 ? '#DC2626' : '#059669' }}>
                           S/ {Number(t.neto || 0).toFixed(2)}
                         </td>
                         <td style={{ textAlign: 'center' }}>
-                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.4rem' }}>
+                          <div style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem' }}>
                             <button
                               onClick={() => handleImprimirBoleta(t.dni)}
-                              className="btn btn-primary"
-                              style={{ padding: '0.35rem 0.65rem', fontSize: '0.75rem' }}
+                              className="btn btn-primary btn-sm"
+                              style={{ padding: '0.3rem 0.65rem' }}
                               title="Visualizar e Imprimir Boleta individual"
                             >
                               <Printer size={13} />
                               <span>Ver / Imprimir</span>
                             </button>
                             <button
-                              onClick={() => handleDescargarBoleta(t.dni, t.apellidos)}
+                              onClick={() => handleDescargarBoleta(t.dni)}
                               disabled={downloading === `boleta-${t.dni}`}
-                              className="btn btn-secondary"
-                              style={{ padding: '0.35rem 0.65rem', fontSize: '0.75rem' }}
-                              title="Descargar archivo PDF de la boleta"
+                              className="btn btn-secondary btn-sm"
+                              style={{ padding: '0.3rem 0.65rem' }}
+                              title="Descargar PDF"
                             >
                               <Download size={13} />
                               <span>PDF</span>
@@ -402,36 +475,47 @@ export const DocumentosView: React.FC = () => {
               </table>
               {lineasFiltradas.length > 0 && (
                 <Pagination
-                  currentPage={currentPage}
-                  totalItems={lineasFiltradas.length}
-                  pageSize={pageSize}
-                  onPageChange={setCurrentPage}
-                  onPageSizeChange={setPageSize}
-                  pageSizeOptions={[10, 15, 25, 50, 100]}
-                  itemLabel="trabajadores"
+                  currentPage={paginacion.pagina}
+                  totalItems={paginacion.total}
+                  pageSize={paginacion.tamano}
+                  onPageChange={paginacion.irAPagina}
+                  onPageSizeChange={paginacion.cambiarTamano}
+                  pageSizeOptions={[15, 30, 50, 100]}
+                  itemLabel="servidores"
                 />
               )}
             </div>
           </div>
 
           {/* 3. DOCUMENTOS CONSOLIDADOS MASIVOS */}
-          <h3 style={{ fontSize: '1.15rem', marginBottom: '1rem', fontWeight: 700 }}>
-            Documentos Masivos y Planillas Oficiales
-          </h3>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '1.25rem', marginBottom: '2rem' }}>
+          <div style={{ marginBottom: '1rem' }}>
+            <h3 style={{ fontSize: '1.2rem', color: '#0F172A', fontWeight: 800, margin: '0 0 0.2rem' }}>
+              Documentos Masivos y Archivos Oficiales
+            </h3>
+            <p style={{ fontSize: '0.85rem', color: '#64748B', margin: 0 }}>
+              Archivos compilados para fiscalización administrativa, auditoría y abono en cuentas del Banco de la Nación.
+            </p>
+          </div>
+
+          <div style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(auto-fit, minmax(310px, 1fr))',
+            gap: '1.25rem',
+            marginBottom: '2rem'
+          }}>
             {/* 3.1 Planilla Oficial en PDF */}
             <div className="card" style={{ display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
               <div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.75rem' }}>
-                  <div style={{ padding: '0.6rem', borderRadius: 'var(--radius-md)', background: 'rgba(239, 68, 68, 0.15)', color: '#EF4444' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.85rem' }}>
+                  <div style={{ padding: '0.6rem', borderRadius: 'var(--radius-md)', background: '#FEF2F2', color: '#DC2626', border: '1px solid #FECACA' }}>
                     <FileText size={22} />
                   </div>
                   <div>
-                    <h4 style={{ fontSize: '1rem', margin: 0, fontWeight: 700 }}>Planilla Oficial en PDF</h4>
-                    <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Formato A4 Apaisado con Firmas</span>
+                    <h4 style={{ fontSize: '0.975rem', margin: 0, fontWeight: 700, color: '#0F172A' }}>Planilla Oficial en PDF</h4>
+                    <span style={{ fontSize: '0.75rem', color: '#64748B' }}>Formato A4 Apaisado con Firmas</span>
                   </div>
                 </div>
-                <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: '1.25rem' }}>
+                <p style={{ fontSize: '0.825rem', color: '#64748B', marginBottom: '1.25rem' }}>
                   Documento formal con encabezados por página, desglose de los 8 descuentos autorizados y recuadros de firmas institucionales.
                 </p>
               </div>
@@ -448,16 +532,16 @@ export const DocumentosView: React.FC = () => {
             {/* 3.2 Planilla Oficial en Excel */}
             <div className="card" style={{ display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
               <div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.75rem' }}>
-                  <div style={{ padding: '0.6rem', borderRadius: 'var(--radius-md)', background: 'rgba(16, 185, 129, 0.15)', color: 'var(--emerald-500)' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.85rem' }}>
+                  <div style={{ padding: '0.6rem', borderRadius: 'var(--radius-md)', background: '#ECFDF5', color: '#059669', border: '1px solid #A7F3D0' }}>
                     <FileSpreadsheet size={22} />
                   </div>
                   <div>
-                    <h4 style={{ fontSize: '1rem', margin: 0, fontWeight: 700 }}>Planilla Oficial en Excel (.xlsx)</h4>
-                    <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Fidelidad a la Plantilla de Cálculo</span>
+                    <h4 style={{ fontSize: '0.975rem', margin: 0, fontWeight: 700, color: '#0F172A' }}>Planilla Oficial en Excel (.xlsx)</h4>
+                    <span style={{ fontSize: '0.75rem', color: '#64748B' }}>Fidelidad a la Plantilla de Cálculo</span>
                   </div>
                 </div>
-                <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: '1.25rem' }}>
+                <p style={{ fontSize: '0.825rem', color: '#64748B', marginBottom: '1.25rem' }}>
                   Hoja de cálculo con celdas numéricas formateadas y fórmulas íntegras, óptima para fiscalización y control financiero.
                 </p>
               </div>
@@ -474,16 +558,16 @@ export const DocumentosView: React.FC = () => {
             {/* 3.3 Cuadernillo Mensual de Boletas */}
             <div className="card" style={{ display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
               <div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.75rem' }}>
-                  <div style={{ padding: '0.6rem', borderRadius: 'var(--radius-md)', background: 'rgba(20, 184, 166, 0.15)', color: 'var(--teal-500)' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.85rem' }}>
+                  <div style={{ padding: '0.6rem', borderRadius: 'var(--radius-md)', background: '#F0F9FF', color: '#0284C7', border: '1px solid #BAE6FD' }}>
                     <FileText size={22} />
                   </div>
                   <div>
-                    <h4 style={{ fontSize: '1rem', margin: 0, fontWeight: 700 }}>Cuadernillo Mensual de Boletas</h4>
-                    <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Todas las Boletas en un solo PDF</span>
+                    <h4 style={{ fontSize: '0.975rem', margin: 0, fontWeight: 700, color: '#0F172A' }}>Cuadernillo Mensual de Boletas</h4>
+                    <span style={{ fontSize: '0.75rem', color: '#64748B' }}>Todas las Boletas en un solo PDF</span>
                   </div>
                 </div>
-                <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: '1.25rem' }}>
+                <p style={{ fontSize: '0.825rem', color: '#64748B', marginBottom: '1.25rem' }}>
                   Compilación de las boletas individuales de todo el personal de la planilla seleccionada, listas para impresión en lote.
                 </p>
               </div>
@@ -500,16 +584,16 @@ export const DocumentosView: React.FC = () => {
             {/* 3.4 Hoja de Remuneraciones */}
             <div className="card" style={{ display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
               <div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.75rem' }}>
-                  <div style={{ padding: '0.6rem', borderRadius: 'var(--radius-md)', background: 'rgba(99, 102, 241, 0.15)', color: 'var(--indigo-500)' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.85rem' }}>
+                  <div style={{ padding: '0.6rem', borderRadius: 'var(--radius-md)', background: '#EEF2FF', color: '#4F46E5', border: '1px solid #C7D2FE' }}>
                     <Layers size={22} />
                   </div>
                   <div>
-                    <h4 style={{ fontSize: '1rem', margin: 0, fontWeight: 700 }}>Hoja de Remuneraciones</h4>
-                    <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Agrupada por Metas Presupuestarias</span>
+                    <h4 style={{ fontSize: '0.975rem', margin: 0, fontWeight: 700, color: '#0F172A' }}>Hoja de Remuneraciones CAFAE</h4>
+                    <span style={{ fontSize: '0.75rem', color: '#64748B' }}>Agrupada por Metas Presupuestarias</span>
                   </div>
                 </div>
-                <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: '1.25rem' }}>
+                <p style={{ fontSize: '0.825rem', color: '#64748B', marginBottom: '1.25rem' }}>
                   Resumen de importes brutos agrupados por meta presupuestal conforme a la estructura de UGEL Chepén.
                 </p>
               </div>
@@ -522,16 +606,62 @@ export const DocumentosView: React.FC = () => {
                 <span>{downloading === 'remun' ? 'Generando...' : 'Descargar Remuneraciones'}</span>
               </button>
             </div>
+
+            {/* 3.5 Archivo Bancario TXT (Banco de la Nación) */}
+            <div className="card" style={{ display: 'flex', flexDirection: 'column', justifyContent: 'space-between', border: '1.5px solid #FED7AA' }}>
+              <div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.85rem' }}>
+                  <div style={{ padding: '0.6rem', borderRadius: 'var(--radius-md)', background: '#FFF7ED', color: '#EA580C', border: '1px solid #FFEDD5' }}>
+                    <Landmark size={22} />
+                  </div>
+                  <div>
+                    <h4 style={{ fontSize: '0.975rem', margin: 0, fontWeight: 700, color: '#0F172A' }}>Archivo Bancario TXT (BN)</h4>
+                    <span style={{ fontSize: '0.75rem', color: '#64748B' }}>Formato Multired 28 caracteres</span>
+                  </div>
+                </div>
+                <p style={{ fontSize: '0.825rem', color: '#64748B', marginBottom: '0.85rem' }}>
+                  Dispersión oficial de pagos Banco de la Nación: Código (3) + Cuenta (10) + Céntimos (15). Total 28 caracteres.
+                </p>
+                <div style={{ marginBottom: '1.15rem' }}>
+                  <label className="form-label" style={{ fontSize: '0.775rem' }}>
+                    Tipo de Transacción BN:
+                  </label>
+                  <select
+                    className="form-select"
+                    style={{ fontSize: '0.825rem', padding: '0.45rem 0.65rem' }}
+                    value={tipoTxBanco}
+                    onChange={(e) => setTipoTxBanco(e.target.value as '041' | '341')}
+                  >
+                    <option value="041">041 - Pago de Haberes (Remunerativo)</option>
+                    <option value="341">341 - Abono No Remunerativo</option>
+                  </select>
+                </div>
+              </div>
+              <button
+                onClick={() => handleDownload('txt', `/api/documentos/banco-txt/${vId}?tipo_transaccion=${tipoTxBanco}`, `Abono_BN_${pTag}_${tipoTxBanco}.txt`)}
+                disabled={downloading === 'txt'}
+                className="btn btn-primary"
+                style={{ background: '#EA580C', borderColor: '#EA580C' }}
+              >
+                <Download size={15} />
+                <span>{downloading === 'txt' ? 'Generando TXT...' : 'Descargar Archivo Bancario TXT'}</span>
+              </button>
+            </div>
           </div>
 
-          {/* Nota Banco Bloqueado */}
-          <div className="card" style={{ background: '#FFFBEB', border: '1px solid #FDE68A', borderLeft: '4px solid #D97706', padding: '1rem 1.25rem' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-              <Lock size={18} style={{ color: '#D97706' }} />
+          {/* Información Técnica Estructura Banco de la Nación */}
+          <div className="card" style={{ background: '#F0FDF4', border: '1px solid #BBF7D0', borderLeft: '4px solid #16A34A', padding: '1.15rem 1.35rem' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.85rem' }}>
+              <CheckCircle2 size={22} style={{ color: '#16A34A', flexShrink: 0 }} />
               <div>
-                <h5 style={{ fontSize: '0.875rem', margin: 0, color: '#92400E' }}>Módulo de Archivo Bancario (TXT) Bloqueado Preventivamente</h5>
-                <p style={{ fontSize: '0.775rem', margin: '0.2rem 0 0 0', color: '#B45309' }}>
-                  Conforme a la Decisión Confirmada 4.5, la generación de archivos bancarios permanece bloqueada hasta validar la especificación técnica con el Banco de la Nación.
+                <h5 style={{ fontSize: '0.9rem', margin: 0, color: '#15803D', fontWeight: 700 }}>
+                  Estructura Certificada para Banco de la Nación (Multired / Telecrédito)
+                </h5>
+                <p style={{ fontSize: '0.8rem', margin: '0.25rem 0 0', color: '#166534', lineHeight: 1.45 }}>
+                  Cada registro del archivo cumple con la longitud estricta de <strong>28 caracteres continuos</strong> sin separadores:
+                  <strong> Transacción</strong> (3 caracteres: <code>041</code> o <code>341</code>) + 
+                  <strong> Cuenta</strong> (10 caracteres de cuenta de ahorros) + 
+                  <strong> Importe</strong> (15 caracteres numéricos en céntimos sin puntos ni comas, con ceros iniciales).
                 </p>
               </div>
             </div>

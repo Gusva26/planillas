@@ -15,8 +15,8 @@ trabajador_service = TrabajadorService()
 
 class TrabajadorCreateRequest(BaseModel):
     dni: str = Field(..., min_length=8, max_length=8)
-    apellidos: str = Field(..., max_length=120)
-    nombres: str = Field(..., max_length=120)
+    apellidos: str = Field(..., max_length=150)
+    nombres: str = Field(..., max_length=150)
     tipo: str = Field(..., pattern='^(IIEE|SEDE)$')
     institucion_id: Optional[int] = None
     area_id: Optional[int] = None
@@ -35,15 +35,18 @@ class TrabajadorCreateRequest(BaseModel):
     numero_cheque: Optional[str] = None
     tiempo_servicio_texto: Optional[str] = None
     leyenda_permanente: Optional[str] = None
+    regimen_pensionario: Optional[str] = None
+    fecha_ingreso: Optional[date] = None
+    fecha_termino: Optional[date] = None
 
 
 class TrabajadorUpdateRequest(TrabajadorCreateRequest):
-    revision: int
+    revision: Optional[int] = None
 
 
 class EstadoRequest(BaseModel):
     activo: bool
-    revision: int
+    revision: Optional[int] = None
 
 
 @router.get('')
@@ -101,7 +104,7 @@ def update_trabajador(
 ):
     try:
         datos = req.model_dump(exclude={'revision'})
-        trabajador_service.update_trabajador(user['token'], item_id, datos, req.revision)
+        trabajador_service.update_trabajador(user['token'], item_id, datos)
         return {'ok': True, 'mensaje': 'Ficha de trabajador actualizada con éxito.'}
     except UserError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
@@ -114,7 +117,7 @@ def set_active_trabajador(
     user: Annotated[dict, Depends(require_role('ADMINISTRADOR', 'PLANILLAS'))]
 ):
     try:
-        trabajador_service.set_active_trabajador(user['token'], item_id, req.activo, req.revision)
+        trabajador_service.set_activo(user['token'], item_id, req.activo)
         return {'ok': True, 'mensaje': f'Trabajador {"activado" if req.activo else "desactivado"} con éxito.'}
     except UserError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))

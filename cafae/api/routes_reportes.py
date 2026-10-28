@@ -34,6 +34,12 @@ def get_reporte(
             return reporte_service.reporte_importe_por_meta(token, version_id)
         elif tipo_reporte == 'descuentos-por-entidad':
             return reporte_service.reporte_descuentos_por_entidad(token, version_id)
+        elif tipo_reporte == 'neto-por-institucion':
+            return reporte_service.reporte_neto_por_institucion(token, version_id)
+        elif tipo_reporte == 'trabajadores-por-nivel':
+            return reporte_service.reporte_trabajadores_por_nivel(token, version_id)
+        elif tipo_reporte == 'trabajadores-por-situacion':
+            return reporte_service.reporte_trabajadores_por_situacion(token, version_id)
         elif tipo_reporte == 'general-descuentos':
             return reporte_service.reporte_general_descuentos(token, version_id)
         elif tipo_reporte == 'licencias-sin-goce':

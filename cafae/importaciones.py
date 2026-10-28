@@ -303,7 +303,8 @@ class ImportacionService:
                 conn.execute(
                     '''UPDATE planilla_descuentos
                        SET monto = 0.00
-                       WHERE version_id = %s AND tipo_descuento_id = %s''',
+                       WHERE detalle_id IN (SELECT id FROM planilla_detalle WHERE version_id = %s)
+                         AND tipo_descuento_id = %s''',
                     (version_id, tipo_descuento_id)
                 )
 
@@ -311,10 +312,11 @@ class ImportacionService:
             total_aplicado = Decimal('0.00')
             for sel in seleccionadas:
                 conn.execute(
-                    '''UPDATE planilla_descuentos
-                       SET monto = %s
-                       WHERE version_id = %s AND detalle_id = %s AND tipo_descuento_id = %s''',
-                    (sel['monto_validado'], version_id, sel['detalle_planilla_id'], tipo_descuento_id)
+                    '''INSERT INTO planilla_descuentos(detalle_id, tipo_descuento_id, monto, actualizado_por)
+                       VALUES (%s, %s, %s, %s)
+                       ON CONFLICT (detalle_id, tipo_descuento_id) DO UPDATE
+                       SET monto = EXCLUDED.monto, actualizado_por = EXCLUDED.actualizado_por''',
+                    (sel['detalle_planilla_id'], tipo_descuento_id, sel['monto_validado'], user['id'])
                 )
                 total_aplicado += sel['monto_validado']
 

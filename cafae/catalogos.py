@@ -4,6 +4,7 @@ Solo ADMINISTRADOR puede crear, editar o cambiar estado de catálogos.
 Todos los roles autenticados pueden consultar los catálogos autorizados.
 """
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+# pyrefly: ignore [missing-import]
 from psycopg.errors import CheckViolation, ForeignKeyViolation, UniqueViolation
 
 from cafae.auth import AuthService
@@ -721,3 +722,81 @@ class CatalogoService:
                        actualizado_en = now()''',
                 (nombre_institucion, nombre_sistema, zona_horaria, logo_archivo_id, user['id'])
             )
+
+    # =========================================================================
+    # N. TIPOS DE DESCUENTO
+    # =========================================================================
+    def list_tipos_descuento(self, token, solo_activos=False, ambito=None):
+        sql = '''SELECT id, codigo, nombre, orden, activo, aplica_iiee, aplica_sede
+                 FROM tipos_descuento WHERE 1=1'''
+        params = []
+        if solo_activos:
+            sql += ' AND activo = true'
+        if ambito:
+            clean_ambito = str(ambito).strip().upper()
+            if clean_ambito == 'IIEE':
+                sql += ' AND aplica_iiee = true'
+            elif clean_ambito == 'SEDE':
+                sql += ' AND aplica_sede = true'
+        sql += ' ORDER BY orden ASC, id ASC'
+        with self.auth.data_transaction(token, 'consultar') as (conn, _):
+            return conn.execute(sql, params).fetchall()
+
+    def get_tipo_descuento(self, token, tipo_id):
+        with self.auth.data_transaction(token, 'consultar') as (conn, _):
+            return conn.execute('SELECT * FROM tipos_descuento WHERE id = %s', (tipo_id,)).fetchone()
+
+    def create_tipo_descuento(self, token, codigo, nombre, orden=None, aplica_iiee=True, aplica_sede=True):
+        codigo = _clean_text(codigo, 'Código de descuento', 1, 30).upper().replace(' ', '_')
+        nombre = _clean_text(nombre, 'Nombre del descuento', 1, 100)
+        aplica_iiee = bool(aplica_iiee)
+        aplica_sede = bool(aplica_sede)
+
+        try:
+            with self.auth.data_transaction(token, 'catalogos') as (conn, _):
+                if orden is None or int(orden) <= 0:
+                    max_ord = conn.execute('SELECT COALESCE(MAX(orden), 0) + 1 AS next_ord FROM tipos_descuento').fetchone()['next_ord']
+                    orden = max_ord
+                else:
+                    orden = int(orden)
+
+                row = conn.execute(
+                    '''INSERT INTO tipos_descuento(codigo, nombre, orden, activo, aplica_iiee, aplica_sede)
+                       VALUES (%s, %s, %s, true, %s, %s) RETURNING id''',
+                    (codigo, nombre, orden, aplica_iiee, aplica_sede)
+                ).fetchone()
+                return row['id']
+        except UniqueViolation:
+            raise UserError(f'Ya existe un tipo de descuento con el código "{codigo}" o con el orden {orden}.')
+
+    def update_tipo_descuento(self, token, tipo_id, nombre, orden, aplica_iiee, aplica_sede, activo=True):
+        nombre = _clean_text(nombre, 'Nombre del descuento', 1, 100)
+        orden = int(orden)
+        if orden < 1:
+            raise UserError('El orden debe ser un número entero mayor o igual a 1.')
+        aplica_iiee = bool(aplica_iiee)
+        aplica_sede = bool(aplica_sede)
+        activo = bool(activo)
+
+        try:
+            with self.auth.data_transaction(token, 'catalogos') as (conn, _):
+                res = conn.execute(
+                    '''UPDATE tipos_descuento
+                       SET nombre = %s, orden = %s, aplica_iiee = %s, aplica_sede = %s, activo = %s
+                       WHERE id = %s RETURNING id''',
+                    (nombre, orden, aplica_iiee, aplica_sede, activo, tipo_id)
+                ).fetchone()
+                if not res:
+                    raise UserError('Tipo de descuento no encontrado.')
+        except UniqueViolation:
+            raise UserError(f'Ya existe otro tipo de descuento con el orden {orden}.')
+
+    def toggle_tipo_descuento(self, token, tipo_id, activo=None):
+        with self.auth.data_transaction(token, 'catalogos') as (conn, _):
+            actual = conn.execute('SELECT activo FROM tipos_descuento WHERE id = %s', (tipo_id,)).fetchone()
+            if not actual:
+                raise UserError('Tipo de descuento no encontrado.')
+            nuevo_estado = (not actual['activo']) if activo is None else bool(activo)
+            conn.execute('UPDATE tipos_descuento SET activo = %s WHERE id = %s', (nuevo_estado, tipo_id))
+            return nuevo_estado
+

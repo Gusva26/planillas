@@ -81,6 +81,15 @@ class FirmaRequest(BaseModel):
     ambito: Optional[str] = None
 
 
+class TipoDescuentoRequest(BaseModel):
+    codigo: Optional[str] = Field(None, max_length=30)
+    nombre: str = Field(..., max_length=100)
+    orden: Optional[int] = 1
+    aplica_iiee: Optional[bool] = True
+    aplica_sede: Optional[bool] = True
+    activo: Optional[bool] = True
+
+
 class ToggleEstadoRequest(BaseModel):
     activo: Optional[bool] = None
 
@@ -102,6 +111,7 @@ def get_catalogo_bundle(user: Annotated[dict, Depends(get_current_user)]):
             'situaciones': catalogo_service.list_situaciones(token, solo_activas=False),
             'subtipos': catalogo_service.list_subtipos(token, solo_activos=False),
             'firmas': catalogo_service.list_firmas(token, solo_activas=False),
+            'tipos_descuento': catalogo_service.list_tipos_descuento(token, solo_activos=False),
             'configuracion': catalogo_service.get_configuracion(token),
         }
     except Exception as exc:
@@ -1043,4 +1053,73 @@ def update_configuracion(
         return {'ok': True, 'mensaje': 'Configuración institucional actualizada con éxito.'}
     except UserError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+
+# =============================================================================
+# TIPOS DE DESCUENTO
+# =============================================================================
+@router.get('/tipos-descuento')
+def list_tipos_descuento(
+    user: Annotated[dict, Depends(get_current_user)],
+    solo_activos: bool = False,
+    ambito: Optional[str] = None
+):
+    return catalogo_service.list_tipos_descuento(user['token'], solo_activos=solo_activos, ambito=ambito)
+
+
+@router.post('/tipos-descuento')
+def create_tipo_descuento(
+    req: TipoDescuentoRequest,
+    user: Annotated[dict, Depends(require_role('ADMINISTRADOR'))]
+):
+    try:
+        new_id = catalogo_service.create_tipo_descuento(
+            user['token'],
+            codigo=req.codigo or req.nombre,
+            nombre=req.nombre,
+            orden=req.orden,
+            aplica_iiee=req.aplica_iiee if req.aplica_iiee is not None else True,
+            aplica_sede=req.aplica_sede if req.aplica_sede is not None else True,
+        )
+        return {'ok': True, 'id': new_id, 'mensaje': 'Tipo de descuento registrado con éxito.'}
+    except UserError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+
+@router.put('/tipos-descuento/{item_id}')
+def update_tipo_descuento(
+    item_id: int,
+    req: TipoDescuentoRequest,
+    user: Annotated[dict, Depends(require_role('ADMINISTRADOR'))]
+):
+    try:
+        catalogo_service.update_tipo_descuento(
+            user['token'],
+            tipo_id=item_id,
+            nombre=req.nombre,
+            orden=req.orden or 1,
+            aplica_iiee=req.aplica_iiee if req.aplica_iiee is not None else True,
+            aplica_sede=req.aplica_sede if req.aplica_sede is not None else True,
+            activo=req.activo if req.activo is not None else True,
+        )
+        return {'ok': True, 'mensaje': 'Tipo de descuento actualizado con éxito.'}
+    except UserError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+
+@router.patch('/tipos-descuento/{item_id}/estado')
+def set_active_tipo_descuento(
+    item_id: int,
+    user: Annotated[dict, Depends(require_role('ADMINISTRADOR'))],
+    body: Optional[ToggleEstadoRequest] = None,
+    activo: Optional[bool] = Query(None)
+):
+    val_activo = activo if activo is not None else (body.activo if body else None)
+    try:
+        token = user['token']
+        nuevo = catalogo_service.toggle_tipo_descuento(token, item_id, val_activo)
+        return {'ok': True, 'activo': nuevo, 'mensaje': f'Tipo de descuento {"activado" if nuevo else "desactivado"} con éxito.'}
+    except UserError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
 

@@ -31,7 +31,7 @@ def render_auditoria_view(token, user_role):
         accion=f_acc if f_acc else None,
         resultado=None if f_res == 'TODOS' else f_res,
         limite=150
-    )
+    )['items']
 
     st.caption(f'Mostrando los últimos {len(eventos)} eventos registrados en la base de datos.')
 

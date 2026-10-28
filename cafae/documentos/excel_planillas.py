@@ -90,8 +90,8 @@ def generar_excel_planilla(info_planilla: dict, filas_detalle: list[dict], firma
         ws['A2'] = "PLANILLA CAFAE PERSONAL ADMINISTRATIVO DL. Nº 276 DE LA SEDE CENTRAL"
     ws['A3'] = f"JURISDICCIÓN UGEL CHEPEN - {nombre_mes} {anio}"
 
-    ws.merge_cells('A2:AA2')
-    ws.merge_cells('A3:AA3')
+    ws.merge_cells('A2:Z2')
+    ws.merge_cells('A3:Z3')
     ws['A2'].font = FONT_TITLE
     ws['A3'].font = FONT_TITLE
     ws['A2'].alignment = Alignment(horizontal="center", vertical="center")
@@ -100,7 +100,7 @@ def generar_excel_planilla(info_planilla: dict, filas_detalle: list[dict], firma
     ws.row_dimensions[3].height = 18
 
     # 2. DEFINICIÓN DE COLUMNAS
-    # Total 27 columnas (A..AA)
+    # Total 26 columnas (A..Z)
     columnas_fijas = [
         ("N°", 5),
         ("N° DNI", 11),
@@ -118,7 +118,6 @@ def generar_excel_planilla(info_planilla: dict, filas_detalle: list[dict], firma
         ("Jornada Laboral", 9),
         ("MULTIRED", 14),
         ("IMPORTE", 12),
-        ("IMPORTE ADICIONAL", 11),
     ]
 
     descuentos_cols = [
@@ -142,7 +141,7 @@ def generar_excel_planilla(info_planilla: dict, filas_detalle: list[dict], firma
     ws.row_dimensions[row_hdr1].height = 20
     ws.row_dimensions[row_hdr2].height = 24
 
-    # Escribir columnas fijas (A..Q: columnas 1..17) con celdas fusionadas filas 5 y 6
+    # Escribir columnas fijas (A..P: columnas 1..16) con celdas fusionadas filas 5 y 6
     for col_idx, (col_nombre, ancho) in enumerate(columnas_fijas, start=1):
         cell = ws.cell(row=row_hdr1, column=col_idx, value=col_nombre)
         cell.font = FONT_HDR
@@ -158,7 +157,7 @@ def generar_excel_planilla(info_planilla: dict, filas_detalle: list[dict], firma
         col_let = get_column_letter(col_idx)
         ws.column_dimensions[col_let].width = ancho
 
-    # Escribir grupo "DESCUENTOS" (R..Y: columnas 18..25)
+    # Escribir grupo "DESCUENTOS" (Q..X: columnas 17..24)
     c_desc_start = len(columnas_fijas) + 1
     c_desc_end = c_desc_start + len(descuentos_cols) - 1
 
@@ -183,7 +182,7 @@ def generar_excel_planilla(info_planilla: dict, filas_detalle: list[dict], firma
         col_let = get_column_letter(c_num)
         ws.column_dimensions[col_let].width = ancho_d
 
-    # Escribir TOTAL DCTOS y NETO A PAGAR (Z..AA: columnas 26..27)
+    # Escribir TOTAL DCTOS y NETO A PAGAR (Y..Z: columnas 25..26)
     for idx_t, (nom_t, ancho_t, fill_t) in enumerate(totales_cols):
         c_num = c_desc_end + 1 + idx_t
         cell = ws.cell(row=row_hdr1, column=c_num, value=nom_t)
@@ -254,7 +253,6 @@ def generar_excel_planilla(info_planilla: dict, filas_detalle: list[dict], firma
                 str(f.get('jornada_laboral') or '40'),
                 str(f.get('cuenta_multired') or ''),
                 imp_val,
-                0.00,  # IMPORTE ADICIONAL
                 pich_val,
                 sull_val,
                 subc_val,
@@ -263,8 +261,8 @@ def generar_excel_planilla(info_planilla: dict, filas_detalle: list[dict], firma
                 fent_val,
                 lic_val,
                 otro_val,
-                f"=SUM(R{r_idx}:Y{r_idx})",  # TOTAL DCTOS
-                f"=P{r_idx}+Q{r_idx}-Z{r_idx}"  # NETO A PAGAR
+                f"=SUM(Q{r_idx}:X{r_idx})",  # TOTAL DCTOS
+                f"=P{r_idx}-Y{r_idx}"  # NETO A PAGAR
             ]
 
             for c_i, v in enumerate(row_vals, start=1):
@@ -290,7 +288,7 @@ def generar_excel_planilla(info_planilla: dict, filas_detalle: list[dict], firma
 
         # FILA DE SUBTOTAL POR META: Celdas combinadas de 1 a 15 con "TOTAL META XX"
         ws.row_dimensions[fila_actual].height = 19
-        for c_i in range(1, 28):
+        for c_i in range(1, 27):
             c_tmp = ws.cell(row=fila_actual, column=c_i)
             c_tmp.fill = AZUL_CABECERA
             c_tmp.border = BORDER_BLACK
@@ -301,12 +299,12 @@ def generar_excel_planilla(info_planilla: dict, filas_detalle: list[dict], firma
         c_lbl_meta.alignment = Alignment(horizontal="right", vertical="center")
 
         # Fórmulas de sumas del bloque meta
-        for c_i in range(16, 28):
+        for c_i in range(16, 27):
             col_letter = get_column_letter(c_i)
-            if c_i == 26:
-                c_formula = f"=SUM(R{fila_actual}:Y{fila_actual})"
-            elif c_i == 27:
-                c_formula = f"=P{fila_actual}+Q{fila_actual}-Z{fila_actual}"
+            if c_i == 25:
+                c_formula = f"=SUM(Q{fila_actual}:X{fila_actual})"
+            elif c_i == 26:
+                c_formula = f"=P{fila_actual}-Y{fila_actual}"
             else:
                 c_formula = f"=SUM({col_letter}{inicio_bloque_meta}:{col_letter}{fin_bloque_meta})"
             
@@ -320,7 +318,7 @@ def generar_excel_planilla(info_planilla: dict, filas_detalle: list[dict], firma
 
     # 4. FILA DE SUB-TOTAL GENERAL: Celdas combinadas de 1 a 15 con "SUB - TOTAL"
     ws.row_dimensions[fila_actual].height = 20
-    for c_i in range(1, 28):
+    for c_i in range(1, 27):
         c_sub = ws.cell(row=fila_actual, column=c_i)
         c_sub.fill = AZUL_CABECERA
         c_sub.border = BORDER_BLACK
@@ -330,7 +328,7 @@ def generar_excel_planilla(info_planilla: dict, filas_detalle: list[dict], firma
     c_sub_lbl.font = FONT_BOLD
     c_sub_lbl.alignment = Alignment(horizontal="center", vertical="center")
 
-    for c_i in range(16, 28):
+    for c_i in range(16, 27):
         col_letter = get_column_letter(c_i)
         if len(todas_filas_subtotales) > 1:
             partes_sub = [f"{col_letter}{rf}" for rf in todas_filas_subtotales]
@@ -375,13 +373,13 @@ def generar_excel_planilla(info_planilla: dict, filas_detalle: list[dict], firma
 
     # Filas con cada concepto y su color distintivo
     conceptos_resumen = [
-        ("* PICHINCHA:", "R", COLOR_PICHINCHA),
-        ("* CAJA SULLAN:", "S", COLOR_SULLANA),
-        ("* BRENTA:", "U", COLOR_BRENTA),
-        ("* SITASE:", "W", COLOR_SITASE),
-        ("* SUBCAFAE:", "T", COLOR_SUBCAFAE),
-        ("* SITRASE:", "V", COLOR_SITRASE),
-        ("* LIC. S/G:", "X", COLOR_LICENCIA),
+        ("* PICHINCHA:", "Q", COLOR_PICHINCHA),
+        ("* CAJA SULLAN:", "R", COLOR_SULLANA),
+        ("* BRENTA:", "T", COLOR_BRENTA),
+        ("* SITASE:", "V", COLOR_SITASE),
+        ("* SUBCAFAE:", "S", COLOR_SUBCAFAE),
+        ("* SITRASE:", "U", COLOR_SITRASE),
+        ("* LIC. S/G:", "W", COLOR_LICENCIA),
     ]
 
     for idx_cr, (lbl_cr, col_let, fill_cr) in enumerate(conceptos_resumen, start=1):

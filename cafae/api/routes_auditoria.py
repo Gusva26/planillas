@@ -1,16 +1,16 @@
 """Rutas del registro inmutable de auditoría forense."""
 from typing import Annotated, Optional
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Query
 
 from cafae.api.deps import require_role
+from cafae.api.schemas import EventoAuditoria, Pagina
 from cafae.auditoria import AuditoriaService
-from cafae.security import UserError
 
 router = APIRouter(prefix='/auditoria', tags=['Auditoría'])
 auditoria_service = AuditoriaService()
 
 
-@router.get('')
+@router.get('', response_model=Pagina[EventoAuditoria])
 def list_auditoria(
     user: Annotated[dict, Depends(require_role('ADMINISTRADOR'))],
     entidad: Optional[str] = None,
@@ -18,18 +18,22 @@ def list_auditoria(
     accion: Optional[str] = None,
     resultado: Optional[str] = None,
     limite: int = Query(100, ge=1, le=500),
+    desplazamiento: int = Query(0, ge=0),
 ):
-    try:
-        return auditoria_service.list_eventos(
-            user['token'],
-            entidad=entidad,
-            usuario_id=usuario_id,
-            accion=accion,
-            resultado=resultado,
-            limite=limite,
-        )
-    except UserError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    """Página de eventos, del más reciente al más antiguo.
+
+    El registro es append-only: `total` solo crece, así que el cliente pagina
+    con `limite`/`desplazamiento` en lugar de descargar la tabla completa.
+    """
+    return auditoria_service.list_eventos(
+        user['token'],
+        entidad=entidad,
+        usuario_id=usuario_id,
+        accion=accion,
+        resultado=resultado,
+        limite=limite,
+        desplazamiento=desplazamiento,
+    )
 
 
 @router.get('/{auditoria_id}/cambios')
@@ -37,7 +41,4 @@ def get_auditoria_cambios(
     auditoria_id: int,
     user: Annotated[dict, Depends(require_role('ADMINISTRADOR'))]
 ):
-    try:
-        return auditoria_service.get_cambios(user['token'], auditoria_id)
-    except UserError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    return auditoria_service.get_cambios(user['token'], auditoria_id)

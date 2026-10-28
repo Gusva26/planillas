@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { apiRequest } from '../api/client';
+import { mensajeDeError } from '../api/errors';
 import { useAuth } from '../context/AuthContext';
-import { CatalogoBundle } from '../types';
+import { CatalogoBundle, TipoDescuento } from '../types';
 import { Modal } from '../components/Modal';
 import { ConfirmModal, AlertBanner } from '../components/ConfirmModal';
 import {
@@ -19,8 +20,12 @@ import {
   Briefcase,
   Award,
   UserCheck,
-  Tag
+  Tag,
+  Users,
+  Receipt,
+  Pencil
 } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
 
 type CatalogoKey =
   | 'iiee'
@@ -30,6 +35,7 @@ type CatalogoKey =
   | 'metas'
   | 'programas'
   | 'partidas'
+  | 'tipos_descuento'
   | 'cargos'
   | 'categorias'
   | 'situaciones'
@@ -56,7 +62,7 @@ export const CatalogosView: React.FC = () => {
   } | null>(null);
   const [deleteLoading, setDeleteLoading] = useState(false);
 
-  // Modal Crear
+  // Modal Crear / Editar
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [modalType, setModalType] = useState<CatalogoKey>('iiee');
   const [nombre, setNombre] = useState('');
@@ -64,6 +70,10 @@ export const CatalogosView: React.FC = () => {
   const [descripcion, setDescripcion] = useState('');
   const [cargoFirmante, setCargoFirmante] = useState('');
   const [orden, setOrden] = useState(1);
+  const [editingDescuento, setEditingDescuento] = useState<TipoDescuento | null>(null);
+  const [aplicaIIEE, setAplicaIIEE] = useState(true);
+  const [aplicaSede, setAplicaSede] = useState(true);
+  const [descuentoActivo, setDescuentoActivo] = useState(true);
 
   const isAdmin = user && user.rol === 'ADMINISTRADOR';
 
@@ -79,9 +89,8 @@ export const CatalogosView: React.FC = () => {
     try {
       const data = await apiRequest<CatalogoBundle>('/api/catalogos/bundle');
       setCatalogos(data);
-    } catch (err: any) {
-      console.error('Error cargando catálogos:', err);
-      showNotification('error', err.message || 'Error cargando los catálogos.');
+    } catch (err) {
+      showNotification('error', mensajeDeError(err, 'Error cargando los catálogos.'));
     } finally {
       setLoading(false);
     }
@@ -93,12 +102,49 @@ export const CatalogosView: React.FC = () => {
 
   const handleOpenCreate = (type: CatalogoKey) => {
     setModalType(type);
+    setEditingDescuento(null);
     setNombre('');
     setCodigo('');
     setDescripcion('');
     setCargoFirmante('');
-    setOrden(1);
+    setOrden(type === 'tipos_descuento' ? (catalogos?.tipos_descuento?.length || 0) + 1 : 1);
+    setAplicaIIEE(true);
+    setAplicaSede(true);
+    setDescuentoActivo(true);
     setIsModalOpen(true);
+  };
+
+  const handleOpenEditDescuento = (item: TipoDescuento) => {
+    setModalType('tipos_descuento');
+    setEditingDescuento(item);
+    setNombre(item.nombre);
+    setCodigo(item.codigo);
+    setOrden(item.orden);
+    setAplicaIIEE(item.aplica_iiee);
+    setAplicaSede(item.aplica_sede);
+    setDescuentoActivo(item.activo);
+    setIsModalOpen(true);
+  };
+
+  const handleToggleDescuentoField = async (
+    id: number,
+    field: 'aplica_iiee' | 'aplica_sede',
+    currentVal: boolean,
+    item: TipoDescuento
+  ) => {
+    try {
+      await apiRequest(`/api/catalogos/tipos-descuento/${id}`, {
+        method: 'PUT',
+        body: JSON.stringify({
+          ...item,
+          [field]: !currentVal,
+        }),
+      });
+      showNotification('success', `Alcance de "${item.nombre}" actualizado.`);
+      loadData();
+    } catch (err) {
+      showNotification('error', mensajeDeError(err, 'Error al actualizar alcance.'));
+    }
   };
 
   const handleSave = async (e: React.FormEvent) => {
@@ -173,12 +219,39 @@ export const CatalogosView: React.FC = () => {
           body: JSON.stringify({ nombre: nombre.trim() }),
         });
         showNotification('success', `Subtipo de trabajador "${nombre.trim()}" registrado.`);
+      } else if (modalType === 'tipos_descuento') {
+        if (editingDescuento) {
+          await apiRequest(`/api/catalogos/tipos-descuento/${editingDescuento.id}`, {
+            method: 'PUT',
+            body: JSON.stringify({
+              nombre: nombre.trim(),
+              orden,
+              aplica_iiee: aplicaIIEE,
+              aplica_sede: aplicaSede,
+              activo: descuentoActivo,
+            }),
+          });
+          showNotification('success', `Tipo de descuento "${nombre.trim()}" actualizado.`);
+        } else {
+          await apiRequest('/api/catalogos/tipos-descuento', {
+            method: 'POST',
+            body: JSON.stringify({
+              codigo: codigo.trim().toUpperCase().replace(/\s+/g, '_'),
+              nombre: nombre.trim(),
+              orden,
+              aplica_iiee: aplicaIIEE,
+              aplica_sede: aplicaSede,
+              activo: true,
+            }),
+          });
+          showNotification('success', `Tipo de descuento "${nombre.trim()}" registrado.`);
+        }
       }
 
       setIsModalOpen(false);
       loadData();
-    } catch (err: any) {
-      showNotification('error', err.message || 'Error al guardar el elemento.');
+    } catch (err) {
+      showNotification('error', mensajeDeError(err, 'Error al guardar el elemento.'));
     }
   };
 
@@ -198,8 +271,8 @@ export const CatalogosView: React.FC = () => {
         `"${nombreItem}" fue ${nuevoEstado ? 'activado/a' : 'desactivado/a'} con éxito.`
       );
       loadData();
-    } catch (err: any) {
-      showNotification('error', err.message || 'No se pudo cambiar el estado.');
+    } catch (err) {
+      showNotification('error', mensajeDeError(err, 'No se pudo cambiar el estado.'));
     }
   };
 
@@ -214,8 +287,8 @@ export const CatalogosView: React.FC = () => {
       showNotification('success', res.mensaje || `"${deleteTarget.nombre}" fue eliminada definitivamente.`);
       setDeleteTarget(null);
       loadData();
-    } catch (err: any) {
-      showNotification('error', err.message || 'No se pudo eliminar el registro.');
+    } catch (err) {
+      showNotification('error', mensajeDeError(err, 'No se pudo eliminar el registro.'));
       setDeleteTarget(null);
     } finally {
       setDeleteLoading(false);
@@ -223,7 +296,7 @@ export const CatalogosView: React.FC = () => {
   };
 
   // Grupos y pestañas
-  const tabsPorGrupo: Record<GrupoKey, { key: CatalogoKey; label: string; count: number; icon: any }[]> = {
+  const tabsPorGrupo: Record<GrupoKey, { key: CatalogoKey; label: string; count: number; icon: LucideIcon }[]> = {
     institucional: [
       { key: 'iiee', label: 'Instituciones Educativas', count: catalogos?.instituciones?.length || 0, icon: Building2 },
       { key: 'niveles', label: 'Niveles Educativos', count: catalogos?.niveles?.length || 0, icon: GraduationCap },
@@ -234,6 +307,7 @@ export const CatalogosView: React.FC = () => {
       { key: 'metas', label: 'Metas Presupuestales', count: catalogos?.metas?.length || 0, icon: Target },
       { key: 'programas', label: 'Programas Presupuestarios', count: catalogos?.programas?.length || 0, icon: FolderTree },
       { key: 'partidas', label: 'Partidas Presupuestarias', count: catalogos?.partidas?.length || 0, icon: FileSpreadsheet },
+      { key: 'tipos_descuento', label: 'Tipos de Descuento', count: catalogos?.tipos_descuento?.length || 0, icon: Receipt },
     ],
     personal: [
       { key: 'cargos', label: 'Cargos', count: catalogos?.cargos?.length || 0, icon: Briefcase },
@@ -252,6 +326,7 @@ export const CatalogosView: React.FC = () => {
       case 'metas': return 'Agregar Meta';
       case 'programas': return 'Agregar Programa';
       case 'partidas': return 'Agregar Partida';
+      case 'tipos_descuento': return 'Agregar Descuento';
       case 'cargos': return 'Agregar Cargo';
       case 'categorias': return 'Agregar Categoría';
       case 'situaciones': return 'Agregar Situación';
@@ -268,6 +343,7 @@ export const CatalogosView: React.FC = () => {
       case 'metas': return 'Registrar Meta Presupuestaria';
       case 'programas': return 'Registrar Programa Presupuestario';
       case 'partidas': return 'Registrar Partida Presupuestaria';
+      case 'tipos_descuento': return editingDescuento ? `Editar Tipo de Descuento: ${editingDescuento.nombre}` : 'Registrar Nuevo Tipo de Descuento';
       case 'cargos': return 'Registrar Cargo';
       case 'categorias': return 'Registrar Categoría Remunerativa';
       case 'situaciones': return 'Registrar Situación Laboral';
@@ -287,34 +363,37 @@ export const CatalogosView: React.FC = () => {
       )}
 
       {/* Selector de Grupos Principales */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1rem', flexWrap: 'wrap', gap: '1rem' }}>
-        <div style={{ display: 'flex', background: '#F1F5F9', padding: '0.25rem', borderRadius: 'var(--radius-lg)', border: '1px solid var(--border-card)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1.25rem', flexWrap: 'wrap', gap: '1rem' }}>
+        <div className="segmented-control">
           <button
             onClick={() => {
               setGrupoActivo('institucional');
               setActiveTab('iiee');
             }}
-            className={`btn btn-sm ${grupoActivo === 'institucional' ? 'btn-primary' : 'btn-ghost'}`}
+            className={`segmented-item ${grupoActivo === 'institucional' ? 'active' : ''}`}
           >
-            🏫 Institucional
+            <Building2 size={15} />
+            <span>Institucional</span>
           </button>
           <button
             onClick={() => {
               setGrupoActivo('presupuesto');
               setActiveTab('metas');
             }}
-            className={`btn btn-sm ${grupoActivo === 'presupuesto' ? 'btn-primary' : 'btn-ghost'}`}
+            className={`segmented-item ${grupoActivo === 'presupuesto' ? 'active' : ''}`}
           >
-            📊 Presupuesto
+            <Target size={15} />
+            <span>Presupuesto</span>
           </button>
           <button
             onClick={() => {
               setGrupoActivo('personal');
               setActiveTab('cargos');
             }}
-            className={`btn btn-sm ${grupoActivo === 'personal' ? 'btn-primary' : 'btn-ghost'}`}
+            className={`segmented-item ${grupoActivo === 'personal' ? 'active' : ''}`}
           >
-            👥 Parámetros de Personal
+            <Users size={15} />
+            <span>Parámetros de Personal</span>
           </button>
         </div>
 
@@ -322,6 +401,7 @@ export const CatalogosView: React.FC = () => {
           <button
             onClick={() => handleOpenCreate(activeTab)}
             className="btn btn-primary"
+            style={{ fontWeight: 700 }}
           >
             <Plus size={16} />
             <span>{getEtiquetaBotonAgregar(activeTab)}</span>
@@ -330,7 +410,7 @@ export const CatalogosView: React.FC = () => {
       </div>
 
       {/* Sub-Pestañas del Grupo Activo */}
-      <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1.5rem', flexWrap: 'wrap' }}>
+      <div style={{ display: 'flex', gap: '0.4rem', marginBottom: '1.5rem', flexWrap: 'wrap' }}>
         {tabsPorGrupo[grupoActivo].map((t) => {
           const Icon = t.icon;
           const isSelected = activeTab === t.key;
@@ -338,11 +418,11 @@ export const CatalogosView: React.FC = () => {
             <button
               key={t.key}
               onClick={() => setActiveTab(t.key)}
-              className={`btn btn-sm ${isSelected ? 'btn-secondary' : 'btn-ghost'}`}
+              className={`btn btn-sm ${isSelected ? 'btn-primary' : 'btn-secondary'}`}
               style={{
-                borderColor: isSelected ? 'var(--teal-500)' : 'transparent',
-                background: isSelected ? 'rgba(20, 184, 166, 0.1)' : 'transparent',
-                color: isSelected ? 'var(--teal-400)' : 'var(--text-secondary)',
+                fontSize: '0.8rem',
+                gap: '0.4rem',
+                fontWeight: isSelected ? 700 : 500,
               }}
             >
               <Icon size={14} />
@@ -759,6 +839,112 @@ export const CatalogosView: React.FC = () => {
         </div>
       )}
 
+      {/* 7b. Tipos de Descuento */}
+      {activeTab === 'tipos_descuento' && (
+        <div className="table-container">
+          <div style={{ padding: '0.85rem 1.25rem', background: '#F8FAFC', borderBottom: '1px solid var(--border-subtle)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem' }}>
+            <div>
+              <h4 style={{ margin: 0, fontSize: '0.925rem', fontWeight: 700, color: '#0F172A' }}>
+                Configuración Global de Tipos de Descuento
+              </h4>
+              <p style={{ margin: 0, fontSize: '0.775rem', color: '#64748B' }}>
+                Active o desactive conceptos (ej. Pichincha, Sullana), configure si aplican a II.EE. o a Sede Administrativa, o cree nuevos conceptos. La fórmula de cálculo se mantiene inalterada.
+              </p>
+            </div>
+          </div>
+          <table className="table">
+            <thead>
+              <tr>
+                <th style={{ width: 60, textAlign: 'center' }}>Orden</th>
+                <th style={{ width: 140 }}>Código</th>
+                <th>Nombre del Concepto de Descuento</th>
+                <th style={{ textAlign: 'center', width: 140 }}>Aplica a II.EE.</th>
+                <th style={{ textAlign: 'center', width: 140 }}>Aplica a SEDE</th>
+                <th style={{ textAlign: 'center', width: 110 }}>Estado</th>
+                {isAdmin && <th style={{ textAlign: 'right', width: 140 }}>Acciones</th>}
+              </tr>
+            </thead>
+            <tbody>
+              {catalogos?.tipos_descuento?.map((d) => (
+                <tr key={d.id} style={{ background: d.activo ? undefined : '#F8FAFC', opacity: d.activo ? 1 : 0.75 }}>
+                  <td style={{ textAlign: 'center', fontWeight: 700, color: '#64748B' }}>
+                    {d.orden}
+                  </td>
+                  <td className="mono-amount" style={{ fontWeight: 700, color: 'var(--teal-600)' }}>
+                    {d.codigo}
+                  </td>
+                  <td style={{ fontWeight: 600, color: d.activo ? '#0F172A' : '#64748B' }}>
+                    {d.nombre}
+                  </td>
+                  <td style={{ textAlign: 'center' }}>
+                    {isAdmin ? (
+                      <button
+                        type="button"
+                        onClick={() => handleToggleDescuentoField(d.id, 'aplica_iiee', d.aplica_iiee, d)}
+                        className={`badge ${d.aplica_iiee ? 'badge-indigo' : 'badge-crimson'}`}
+                        style={{ cursor: 'pointer', border: 'none' }}
+                        title="Haga clic para alternar alcance en II.EE."
+                      >
+                        {d.aplica_iiee ? 'Sí (II.EE.)' : 'No'}
+                      </button>
+                    ) : (
+                      <span className={`badge ${d.aplica_iiee ? 'badge-indigo' : 'badge-crimson'}`}>
+                        {d.aplica_iiee ? 'Sí (II.EE.)' : 'No'}
+                      </span>
+                    )}
+                  </td>
+                  <td style={{ textAlign: 'center' }}>
+                    {isAdmin ? (
+                      <button
+                        type="button"
+                        onClick={() => handleToggleDescuentoField(d.id, 'aplica_sede', d.aplica_sede, d)}
+                        className={`badge ${d.aplica_sede ? 'badge-amber' : 'badge-crimson'}`}
+                        style={{ cursor: 'pointer', border: 'none' }}
+                        title="Haga clic para alternar alcance en SEDE"
+                      >
+                        {d.aplica_sede ? 'Sí (SEDE)' : 'No'}
+                      </button>
+                    ) : (
+                      <span className={`badge ${d.aplica_sede ? 'badge-amber' : 'badge-crimson'}`}>
+                        {d.aplica_sede ? 'Sí (SEDE)' : 'No'}
+                      </span>
+                    )}
+                  </td>
+                  <td style={{ textAlign: 'center' }}>
+                    <span className={`badge ${d.activo ? 'badge-emerald' : 'badge-crimson'}`}>
+                      {d.activo ? 'Activo' : 'Inactivo'}
+                    </span>
+                  </td>
+                  {isAdmin && (
+                    <td style={{ textAlign: 'right' }}>
+                      <div style={{ display: 'inline-flex', gap: '0.4rem', alignItems: 'center' }}>
+                        <button
+                          onClick={() => handleOpenEditDescuento(d)}
+                          className="btn btn-sm btn-secondary"
+                          style={{ padding: '0.3rem 0.6rem', fontSize: '0.75rem', gap: '0.25rem' }}
+                          title="Editar concepto"
+                        >
+                          <Pencil size={12} />
+                          <span>Editar</span>
+                        </button>
+                        <button
+                          onClick={() => handleToggleEstado('tipos-descuento', d.id, !d.activo, d.nombre)}
+                          className="btn btn-sm btn-secondary"
+                          style={{ padding: '0.3rem 0.6rem', fontSize: '0.75rem' }}
+                          title={d.activo ? 'Desactivar concepto' : 'Activar concepto'}
+                        >
+                          {d.activo ? <PowerOff size={13} color="#f87171" /> : <Power size={13} color="#34d399" />}
+                        </button>
+                      </div>
+                    </td>
+                  )}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
       {/* 8. Cargos */}
       {activeTab === 'cargos' && (
         <div className="table-container">
@@ -1149,6 +1335,74 @@ export const CatalogosView: React.FC = () => {
                   onChange={(e) => setDescripcion(e.target.value)}
                   required
                 />
+              </div>
+            </>
+          ) : modalType === 'tipos_descuento' ? (
+            <>
+              <div className="form-group">
+                <label className="form-label">Código del Descuento *</label>
+                <input
+                  type="text"
+                  required
+                  disabled={!!editingDescuento}
+                  className="form-input mono-amount"
+                  placeholder="Ej. COOP_SAN_JOSE, JUDICIAL, PICHINCHA"
+                  value={codigo}
+                  onChange={(e) => setCodigo(e.target.value.toUpperCase())}
+                />
+                <small style={{ color: '#64748B', fontSize: '0.75rem' }}>
+                  Identificador técnico único sin espacios. En mayúsculas.
+                </small>
+              </div>
+              <div className="form-group">
+                <label className="form-label">Nombre del Concepto *</label>
+                <input
+                  type="text"
+                  required
+                  className="form-input"
+                  placeholder="Ej. Banco Pichincha, Cooperativa San José..."
+                  value={nombre}
+                  onChange={(e) => setNombre(e.target.value)}
+                />
+              </div>
+              <div className="form-group">
+                <label className="form-label">Orden de Visualización *</label>
+                <input
+                  type="number"
+                  min="1"
+                  required
+                  className="form-input"
+                  value={orden}
+                  onChange={(e) => setOrden(parseInt(e.target.value) || 1)}
+                />
+              </div>
+              <div style={{ marginTop: '0.75rem', display: 'flex', flexDirection: 'column', gap: '0.65rem', background: '#F8FAFC', padding: '0.85rem', borderRadius: 'var(--radius-md)', border: '1px solid #E2E8F0' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', fontSize: '0.85rem', fontWeight: 600 }}>
+                  <input
+                    type="checkbox"
+                    checked={aplicaIIEE}
+                    onChange={(e) => setAplicaIIEE(e.target.checked)}
+                  />
+                  <span>Aplica a Instituciones Educativas (II.EE.)</span>
+                </label>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', fontSize: '0.85rem', fontWeight: 600 }}>
+                  <input
+                    type="checkbox"
+                    checked={aplicaSede}
+                    onChange={(e) => setAplicaSede(e.target.checked)}
+                  />
+                  <span>Aplica a Sede Administrativa (SEDE)</span>
+                </label>
+                {editingDescuento && (
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', fontSize: '0.85rem', fontWeight: 600 }}>
+                    <input
+                      type="checkbox"
+                      checked={descuentoActivo}
+                      onChange={(e) => setDescuentoActivo(e.target.checked)}
+                    />
+                    <span>Concepto Activo</span>
+                  </label>
+                )}
               </div>
             </>
           ) : (
