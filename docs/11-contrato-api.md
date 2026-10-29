@@ -60,6 +60,10 @@ de error se puede rastrear hasta el log sin adivinar. En los `5xx` conviene
 mostrar ese identificador al usuario: es lo único que permite encontrar la
 causa.
 
+Los fallos no clasificados también respetan el sobre: responden
+`500 ERROR_INTERNO` con `instance`, sin incluir el texto de la excepción, y
+conservan el `X-Request-ID` de la petición. El traceback va solo al log.
+
 ## Listados paginados
 
 Todo listado que crece sin techo (`auditoria`, y a medida que se migren los

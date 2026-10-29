@@ -120,7 +120,7 @@ capa HTTP.
 | D-01 | Resuelto (era Crítico) | El TXT exige `txt_bancario`, está bloqueado por D.5 y solo se emite desde versión cerrada | `routes_documentos.py:20-42,168-208`; `tests/seguridad/` | 28/10 |
 | D-02 | Resuelto (era Crítico) | Un solo esquema de credenciales: `Authorization: Bearer`; sin query string ni cabeceras alternativas | `api/deps.py`; `frontend/src/api/client.ts` | 28/10 |
 | D-03 | Resuelto (era Alto) | Ningún router ejecuta SQL ni abre transacciones. Los 13 `DELETE ... RETURNING` de catálogos viven ahora en `CatalogoService._borrar_catalogo`, que traduce ausencia (`NoEncontrado` → 404) y uso (`Conflicto` → 409). Una guardia AST cubre los tres routers | `cafae/catalogos.py`; `tests/api/test_contrato.py` | 28/10 |
-| D-04 | Resuelto (era Alto) | Cabecera, firmas y líneas de una versión salen de una sola transacción: `get_version_completa` y `get_linea_con_version`. Antes se armaban con dos y tres lecturas y podían mezclar revisiones | `cafae/planillas.py`; `routes_planillas.py`; `routes_documentos.py` | 28/10 |
+| D-04 | Resuelto (era Alto) | Cabecera, firmas y líneas de una versión salen de una sola transacción: `get_version_completa` y `get_linea_con_version`. Antes se armaban con dos y tres lecturas y podían mezclar revisiones. Los documentos usan la copia de firmas de la versión (`planilla_firmas`), no el catálogo vivo | `cafae/planillas.py`; `routes_planillas.py`; `routes_documentos.py` | 28/10 |
 | D-05 | Resuelto | Los ocho endpoints de documentos exigen `generar_documentos`; `txt_bancario` además exige versión cerrada y D.5 habilitado. `CONSULTA` solo lee | `routes_documentos.py:21-22,69-211`; `tests/seguridad/test_documentos.py` | 28/10 |
 | D-06 | Resuelto (era Parcial) | Sobre de error uniforme (RFC 9457) con `code` estable, `403`/`401` para `AccessError`/`SessionError`, `409` para conflictos de revisión y `422` para validación. Ningún router captura `UserError`: los siete delegan en el handler global y una guardia AST lo verifica | `api/errors.py`; `api/main.py`; `tests/api/test_contrato.py` | 28/10 |
 | D-07 | Resuelto (era Alto) | Los 62 endpoints de catálogos viven en un paquete por grupo (`bundle`, `institucional`, `presupuesto`, `personal`, `firmas`, `configuracion` + `_base` con modelos y servicio); el módulo más grande baja a 295 líneas y una prueba fija las 62 operaciones en OpenAPI | `cafae/api/routes_catalogos/` | 28/10 |
@@ -231,6 +231,20 @@ salió de `requirements.txt` y `requirements.lock`, el `Dockerfile` dejó de
 copiar `app.py` y el healthcheck de `compose.yaml` apunta a `/api/health`.
 Los cuatro casos de UI basados en `AppTest` se retiraron de
 `tests/auth/test_auth.py`; la suite completa pasa sin `streamlit` instalado.
+
+**Firmas de la versión y sobre del 500 28/10/2026.** Dos huecos que la revisión
+del PR encontró. Los documentos armaban el bloque de firmas con
+`CatalogoService.list_firmas` recortado a `cantidad_firmas`: una planilla ya
+cerrada cambiaba de firmantes si alguien editaba el catálogo después, y un
+catálogo con menos firmas activas producía un PDF incompleto sin avisar. Ahora
+`_get_contexto_version` usa la copia que la versión guardó en `planilla_firmas`
+al crearse y al cerrarse, así que D-04 cubre también las firmas y no solo la
+cabecera y las líneas. Por otro lado, un fallo no clasificado salía como
+`text/plain` de Starlette: sin `code`, sin `instance` y sin `X-Request-ID`, justo
+donde el contrato promete que el identificador sirve para rastrear el incidente.
+Se registró un handler de `Exception` que responde `500 ERROR_INTERNO` sin
+filtrar `str(exc)`, y el middleware deja el identificador en `request.state`
+porque el handler corre fuera de él. Pruebas: 118.
 
 ### Riesgos abiertos
 

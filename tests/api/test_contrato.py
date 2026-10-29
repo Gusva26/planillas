@@ -25,6 +25,7 @@ from cafae.api.main import (
     access_error_handler,
     app,
     conflicto_handler,
+    error_interno_handler,
     http_exception_handler,
     no_encontrado_handler,
     serialization_failure_handler,
@@ -208,6 +209,28 @@ class Handlers(unittest.TestCase):
         body = _json(response)
         self.assertEqual(body['code'], 'VALIDACION')
         self.assertEqual(body['errors'][0]['campo'], 'body.mes')
+
+    def test_fallo_no_clasificado_usa_el_sobre(self):
+        """Sin handler, Starlette responde `text/plain` y el cliente no lee `code`."""
+        response = self._respuesta(
+            error_interno_handler, RuntimeError('password=secreto'))
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(response.media_type, MEDIA_TYPE)
+        body = _json(response)
+        self.assertEqual(body['code'], 'ERROR_INTERNO')
+        # El detalle de la excepción no se filtra al cliente.
+        self.assertNotIn('secreto', body['detail'])
+        self.assertEqual(body['instance'], '/api/planillas')
+
+    def test_el_500_conserva_el_id_de_correlacion(self):
+        """El handler corre fuera del middleware, así que lee el id del estado."""
+        peticion = _request()
+        peticion.state.request_id = 'abc123'
+        response = asyncio.run(error_interno_handler(peticion, RuntimeError('x')))
+        self.assertEqual(response.headers['X-Request-ID'], 'abc123')
+
+    def test_el_500_esta_registrado_como_handler_global(self):
+        self.assertIn(Exception, app.exception_handlers)
 
 
 class EsquemaOpenAPI(unittest.TestCase):
@@ -478,28 +501,49 @@ class RoutersDeleganEnElServicio(unittest.TestCase):
         servicio.assert_called_once_with(
             'token', 5, institucion_id=2, area_id=3, query='perez')
 
-    def test_documentos_comparte_la_misma_lectura(self):
+    def test_documentos_usan_las_firmas_de_la_version(self):
+        """D-04: el documento se firma con la copia de la versión, no con el catálogo.
+
+        `planilla_firmas` guarda nombre y cargo al crear y al cerrar. Leer el
+        catálogo vivo haría que una planilla ya cerrada cambiara de firmantes si
+        alguien edita el catálogo después.
+        """
         from cafae.api import routes_documentos
 
         with mock.patch.object(
             routes_documentos.pln_service, 'get_version_completa'
-        ) as servicio, mock.patch.object(
-            routes_documentos.cat_service, 'list_firmas'
-        ) as firmas:
+        ) as servicio, mock.patch(
+            'cafae.catalogos.CatalogoService.list_firmas'
+        ) as catalogo:
             servicio.return_value = {
-                'version': {'id': 5, 'cantidad_firmas': 2},
-                'firmas': [],
+                'version': {'id': 5, 'cantidad_firmas': 4, 'estado': 'CERRADA'},
+                'firmas': [{'id': 10}, {'id': 11}, {'id': 12}, {'id': 13}],
                 'lineas': [{'id': 1}],
             }
-            firmas.return_value = [{'id': 10}, {'id': 11}, {'id': 12}]
             v_info, filas, firmas_doc = routes_documentos._get_contexto_version(
                 'token', 5, permission='generar_documentos')
 
         servicio.assert_called_once_with('token', 5, permiso='generar_documentos')
+        catalogo.assert_not_called()
         self.assertEqual(v_info['id'], 5)
         self.assertEqual(filas, [{'id': 1}])
-        # El catálogo se recorta a las firmas que pide la planilla.
-        self.assertEqual([f['id'] for f in firmas_doc], [10, 11])
+        self.assertEqual([f['id'] for f in firmas_doc], [10, 11, 12, 13])
+
+    def test_documentos_no_rellenan_firmas_que_la_version_no_tiene(self):
+        """Un recorte o relleno silencioso escondería un bloque de firmas incompleto."""
+        from cafae.api import routes_documentos
+
+        with mock.patch.object(
+            routes_documentos.pln_service, 'get_version_completa'
+        ) as servicio:
+            servicio.return_value = {
+                'version': {'id': 5, 'cantidad_firmas': 4, 'estado': 'ABIERTA'},
+                'firmas': [{'id': 10}, {'id': 11}, {'id': 12}],
+                'lineas': [],
+            }
+            _, _, firmas_doc = routes_documentos._get_contexto_version('token', 5)
+
+        self.assertEqual([f['id'] for f in firmas_doc], [10, 11, 12])
 
     def test_boleta_individual_pide_linea_y_version_juntas(self):
         from cafae.api import routes_documentos

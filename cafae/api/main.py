@@ -109,6 +109,10 @@ async def correlacion(request: Request, call_next):
     los logs.
     """
     identificador = (request.headers.get('X-Request-ID') or uuid4().hex)[:64]
+    # El handler de 500 corre fuera de este middleware (Starlette envuelve la
+    # pila), así que el identificador viaja en el estado de la petición para que
+    # también pueda ponerlo en la respuesta de error.
+    request.state.request_id = identificador
     marca = request_id.set(identificador)
     inicio = perf_counter()
     try:
@@ -219,6 +223,27 @@ async def validation_error_handler(request: Request, exc: RequestValidationError
         errors=errores,
     )
     return _respuesta_problema(body, body['status'])
+
+
+@app.exception_handler(Exception)
+async def error_interno_handler(request: Request, exc: Exception):
+    """Fallo no clasificado: mismo sobre que el resto, sin filtrar `str(exc)`.
+
+    Sin este handler Starlette responde `text/plain` y el cliente no puede
+    ramificar por `code`. Como la respuesta la envía el `ServerErrorMiddleware`,
+    que está por fuera del middleware de correlación, el identificador se toma
+    del estado que ese middleware dejó en la petición.
+    """
+    body = problema(
+        'ERROR_INTERNO',
+        'Ocurrió un error interno. Reporte el identificador de la solicitud.',
+        instance=request.url.path,
+    )
+    respuesta = _respuesta_problema(body, body['status'])
+    identificador = getattr(request.state, 'request_id', None)
+    if identificador:
+        respuesta.headers['X-Request-ID'] = identificador
+    return respuesta
 
 
 # Registrar Routers bajo /api

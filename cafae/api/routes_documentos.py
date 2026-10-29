@@ -4,7 +4,6 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 
 from cafae.api.deps import require_permission
-from cafae.catalogos import CatalogoService
 from cafae.documentos.banco_txt import generar_txt_banco
 from cafae.documentos.boletas import generar_boleta_pdf, generar_cuadernillo_boletas_pdf
 from cafae.documentos.excel_planillas import generar_excel_planilla
@@ -14,7 +13,6 @@ from cafae.planillas import PlanillaService
 
 router = APIRouter(prefix='/documentos', tags=['Documentos'])
 pln_service = PlanillaService()
-cat_service = CatalogoService()
 
 # ADR-006: los documentos oficiales exigen permiso propio, no solo sesión.
 PERMISO_DOCUMENTOS = 'generar_documentos'
@@ -44,18 +42,15 @@ def _exigir_version_cerrada(v_info: dict) -> None:
 
 
 def _get_contexto_version(token: str, version_id: int, *, permission: str = 'consultar'):
-    """Cabecera y líneas de la versión en una sola transacción (D-04).
+    """Cabecera, firmas y líneas de la versión en una sola transacción (D-04).
 
-    El catálogo de firmas se lee aparte a propósito: no es estado de la versión
-    y cambia con muy poca frecuencia.
+    Las firmas salen de `planilla_firmas`, la copia que la versión guardó al
+    crearse y al cerrarse. Leerlas del catálogo vivo haría que un documento ya
+    cerrado cambiara de firmantes si alguien edita el catálogo después, y que un
+    catálogo con menos firmas activas produjera un PDF incompleto en silencio.
     """
     datos = pln_service.get_version_completa(token, version_id, permiso=permission)
-    v_info = datos['version']
-    filas = datos['lineas']
-    firmas = cat_service.list_firmas(token, solo_activas=True)
-    firmas_doc = firmas[:v_info['cantidad_firmas']]
-
-    return v_info, filas, firmas_doc
+    return datos['version'], datos['lineas'], datos['firmas']
 
 
 @router.get('/planilla-pdf/{version_id}')
