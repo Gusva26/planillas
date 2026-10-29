@@ -422,15 +422,25 @@ def generar_excel_planilla(info_planilla: dict, filas_detalle: list[dict], firma
     ws.row_dimensions[r_firmas + 1].height = 14
     ws.row_dimensions[r_firmas + 2].height = 14
 
-    # 4 firmas en IIEE, 3 en Sede
+    # Regla de dominio: exactamente 4 firmas en II.EE. y 3 en Sede.
+    # Cada bloque ocupa 4 columnas; en Sede se reparten sobre las 26 con dos
+    # columnas de margen para que no quede un cuarto espacio vacío a la derecha.
     posiciones_firmas_iiee = [
         (4, 7, "Mg. ....................................", "Director de UGEL CHEPEN"),
         (9, 12, "Ing. ....................................", "Directora Gestión Institucional"),
         (15, 18, "Lic. ....................................", "Director de Gestión Administrativa"),
         (21, 24, "Eco. ....................................", "Especialista en Finanzas"),
     ]
+    posiciones_firmas_sede = [
+        (3, 6, "Mg. ....................................", "Director de UGEL CHEPEN"),
+        (12, 15, "Ing. ....................................", "Directora Gestión Institucional"),
+        (21, 24, "Lic. ....................................", "Director de Gestión Administrativa"),
+    ]
+    posiciones_firmas = (
+        posiciones_firmas_iiee if tipo == 'IIEE' else posiciones_firmas_sede
+    )
 
-    for idx_f, (c_ini, c_fin, fallback_nom, fallback_car) in enumerate(posiciones_firmas_iiee):
+    for idx_f, (c_ini, c_fin, fallback_nom, fallback_car) in enumerate(posiciones_firmas):
         ws.merge_cells(start_row=r_firmas, start_column=c_ini, end_row=r_firmas, end_column=c_fin)
         ws.merge_cells(start_row=r_firmas + 1, start_column=c_ini, end_row=r_firmas + 1, end_column=c_fin)
         ws.merge_cells(start_row=r_firmas + 2, start_column=c_ini, end_row=r_firmas + 2, end_column=c_fin)

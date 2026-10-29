@@ -244,7 +244,11 @@ cabecera y las líneas. Por otro lado, un fallo no clasificado salía como
 donde el contrato promete que el identificador sirve para rastrear el incidente.
 Se registró un handler de `Exception` que responde `500 ERROR_INTERNO` sin
 filtrar `str(exc)`, y el middleware deja el identificador en `request.state`
-porque el handler corre fuera de él. Pruebas: 118.
+porque el handler corre fuera de él. Por último, el Excel oficial dibujaba
+siempre cuatro bloques de firma, así que una planilla de Sede salía con un
+cuarto espacio vacío bajo el cargo "Especialista en Finanzas": ahora Sede
+distribuye tres bloques sobre el ancho de la hoja y conserva los cuatro en
+II.EE. Pruebas: 121.
 
 ### Riesgos abiertos
 
