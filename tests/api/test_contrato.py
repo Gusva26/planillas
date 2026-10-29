@@ -7,6 +7,7 @@ import asyncio
 import importlib
 import inspect
 import json
+import logging
 import sys
 import unittest
 from pathlib import Path
@@ -15,6 +16,7 @@ from unittest import mock
 sys.path.insert(0, '/app')
 
 from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.requests import Request
 
@@ -34,7 +36,7 @@ from cafae.api.schemas import PlanillaCreada, RespuestaCreacionPlanilla
 from cafae.security import Conflicto, NoEncontrado, UserError
 
 
-def _request(path='/api/planillas'):
+def _request(path='/api/planillas', headers=None):
     return Request({
         'type': 'http',
         'http_version': '1.1',
@@ -43,7 +45,7 @@ def _request(path='/api/planillas'):
         'path': path,
         'root_path': '',
         'query_string': b'',
-        'headers': [],
+        'headers': [(k.lower().encode(), v.encode()) for k, v in (headers or {}).items()],
         'server': ('testserver', 80),
         'client': ('testclient', 12345),
     })
@@ -278,6 +280,81 @@ class EsquemaOpenAPI(unittest.TestCase):
         self.assertEqual(respuesta.model_dump()['planilla']['revision_edicion'], 4)
 
 
+class CorrelacionYRegistro(unittest.TestCase):
+    """D-08: cada solicitud deja una línea JSON con su identificador."""
+
+    def test_el_formateador_emite_json_con_el_id_vigente(self):
+        from cafae.logging_conf import FormateadorJSON, request_id
+
+        marca = request_id.set('prueba-123')
+        try:
+            registro = logging.LogRecord(
+                'cafae.api', logging.INFO, __file__, 1, 'solicitud', None, None)
+            registro.metodo = 'GET'
+            registro.ruta = '/api/health'
+            linea = json.loads(FormateadorJSON().format(registro))
+        finally:
+            request_id.reset(marca)
+
+        self.assertEqual(linea['request_id'], 'prueba-123')
+        self.assertEqual(linea['metodo'], 'GET')
+        self.assertEqual(linea['ruta'], '/api/health')
+        self.assertEqual(linea['nivel'], 'INFO')
+
+    def test_la_respuesta_devuelve_el_id_recibido(self):
+        from cafae.api.main import correlacion
+        from cafae.logging_conf import request_id
+
+        visto = {}
+
+        async def siguiente(peticion):
+            visto['id'] = request_id.get()
+            return JSONResponse({'ok': True})
+
+        respuesta = asyncio.run(
+            correlacion(_request('/api/health', {'X-Request-ID': 'abc123'}), siguiente))
+
+        self.assertEqual(visto['id'], 'abc123')
+        self.assertEqual(respuesta.headers['x-request-id'], 'abc123')
+        # El contexto no queda contaminado para la siguiente solicitud.
+        self.assertEqual(request_id.get(), '-')
+
+    def test_sin_cabecera_se_genera_un_id(self):
+        from cafae.api.main import correlacion
+
+        async def siguiente(peticion):
+            return JSONResponse({'ok': True})
+
+        respuesta = asyncio.run(correlacion(_request('/api/health'), siguiente))
+
+        self.assertEqual(len(respuesta.headers['x-request-id']), 32)
+
+
+class ConfiguracionDeCors(unittest.TestCase):
+    """D-09: sin comodín ni credenciales en CORS."""
+
+    def setUp(self):
+        from cafae.api.main import app
+
+        self.opciones = next(
+            middleware.kwargs
+            for middleware in app.user_middleware
+            if middleware.cls.__name__ == 'CORSMiddleware'
+        )
+
+    def test_no_abre_cualquier_origen(self):
+        self.assertNotIn('*', self.opciones['allow_origins'])
+        self.assertTrue(self.opciones['allow_origins'])
+
+    def test_no_admite_credenciales_de_navegador(self):
+        # La sesión viaja en `Authorization`, no en cookies.
+        self.assertFalse(self.opciones['allow_credentials'])
+
+    def test_expone_el_id_de_correlacion(self):
+        self.assertIn('X-Request-ID', self.opciones['expose_headers'])
+        self.assertIn('X-Request-ID', self.opciones['allow_headers'])
+
+
 class PaginacionDeListados(unittest.TestCase):
     """Los listados que crecen sin techo usan el sobre `Pagina[T]`."""
 
@@ -468,6 +545,16 @@ class RoutersDeleganEnElServicio(unittest.TestCase):
 
                 servicio.assert_called_once_with('token', 7)
                 self.assertTrue(respuesta['ok'])
+
+    def test_el_bundle_no_convierte_un_fallo_del_servidor_en_400(self):
+        """Un `except Exception` en la ruta enmascaraba los 500 como 400."""
+        from cafae.api.routes_catalogos import bundle
+
+        with mock.patch.object(
+            bundle.catalogo_service, 'list_niveles', side_effect=RuntimeError('sin conexión')
+        ):
+            with self.assertRaises(RuntimeError):
+                bundle.get_catalogo_bundle({'token': 'token'})
 
 
 if __name__ == '__main__':

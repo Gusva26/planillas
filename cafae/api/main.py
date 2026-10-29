@@ -2,11 +2,16 @@
 from decimal import Decimal
 from datetime import date, datetime
 import json
-from uuid import UUID
+import logging
+import os
+from time import perf_counter
+from uuid import UUID, uuid4
+
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from psycopg.errors import SerializationFailure
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
@@ -19,7 +24,11 @@ from cafae.api.routes_importaciones import router as importaciones_router
 from cafae.api.routes_documentos import router as documentos_router
 from cafae.api.routes_reportes import router as reportes_router
 from cafae.api.routes_auditoria import router as auditoria_router
+from cafae.logging_conf import configurar as configurar_logging, request_id
 from cafae.security import AccessError, Conflicto, NoEncontrado, SessionError, UserError
+
+configurar_logging()
+registrador = logging.getLogger('cafae.api')
 
 
 class CustomJSONEncoder(json.JSONEncoder):
@@ -67,14 +76,69 @@ app = FastAPI(
     },
 )
 
-# CORS permitido para desarrollo frontend moderno
+# D-09: el frontend habla por el mismo origen; CORS solo abre los puertos de
+# desarrollo y sin credenciales, porque la sesión viaja en `Authorization` y no
+# en cookies. Un `*` con credenciales permitiría que cualquier sitio operara la
+# API con la sesión del navegador.
+ORIGENES_DESARROLLO = ('http://localhost:5173', 'http://127.0.0.1:5173')
+
+
+def origenes_permitidos() -> list[str]:
+    """Orígenes de CORS; `CAFAE_CORS_ORIGINS` los reemplaza separados por coma."""
+    crudos = os.environ.get('CAFAE_CORS_ORIGINS', ','.join(ORIGENES_DESARROLLO))
+    return [origen.strip() for origen in crudos.split(',') if origen.strip()]
+
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=['*'],
-    allow_credentials=True,
-    allow_methods=['*'],
-    allow_headers=['*'],
+    allow_origins=origenes_permitidos(),
+    allow_credentials=False,
+    allow_methods=['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allow_headers=['Authorization', 'Content-Type', 'X-Request-ID'],
+    expose_headers=['X-Request-ID'],
+    max_age=600,
 )
+
+
+@app.middleware('http')
+async def correlacion(request: Request, call_next):
+    """Asigna un identificador a la petición y registra el acceso en una línea.
+
+    Se acepta el `X-Request-ID` que envíe el cliente (un proxy, por ejemplo) y
+    se devuelve siempre en la respuesta: con ese valor se busca el incidente en
+    los logs.
+    """
+    identificador = (request.headers.get('X-Request-ID') or uuid4().hex)[:64]
+    marca = request_id.set(identificador)
+    inicio = perf_counter()
+    try:
+        respuesta = await call_next(request)
+    except Exception:
+        registrador.exception(
+            'solicitud fallida',
+            extra={
+                'evento': 'solicitud',
+                'metodo': request.method,
+                'ruta': request.url.path,
+                'duracion_ms': round((perf_counter() - inicio) * 1000, 1),
+            },
+        )
+        raise
+    else:
+        respuesta.headers['X-Request-ID'] = identificador
+        registrador.info(
+            'solicitud',
+            extra={
+                'evento': 'solicitud',
+                'metodo': request.method,
+                'ruta': request.url.path,
+                'estado': respuesta.status_code,
+                'duracion_ms': round((perf_counter() - inicio) * 1000, 1),
+            },
+        )
+        return respuesta
+    finally:
+        request_id.reset(marca)
 
 
 def _respuesta_problema(body: dict, status_code: int) -> CustomJSONResponse:
@@ -169,9 +233,6 @@ app.include_router(documentos_router, prefix=api_prefix)
 app.include_router(reportes_router, prefix=api_prefix)
 app.include_router(auditoria_router, prefix=api_prefix)
 
-
-import os
-from fastapi.staticfiles import StaticFiles
 
 @app.get('/api/health')
 def health():

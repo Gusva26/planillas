@@ -1,7 +1,7 @@
 """Identidad institucional y tipos de descuento aplicables a la planilla."""
 from typing import Annotated, Optional
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, Query
 
 from cafae.api.deps import get_current_user, require_role
 from cafae.api.routes_catalogos._base import (

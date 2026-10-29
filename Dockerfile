@@ -20,6 +20,8 @@ COPY assets ./assets
 COPY --from=frontend-builder /build/dist ./static
 USER cafae
 EXPOSE 8501
-CMD ["uvicorn", "cafae.api.main:app", "--host", "0.0.0.0", "--port", "8501"]
+# El log de acceso lo emite el middleware de correlación en JSON; el de uvicorn
+# en texto duplicaría cada línea.
+CMD ["uvicorn", "cafae.api.main:app", "--host", "0.0.0.0", "--port", "8501", "--no-access-log"]
 
 

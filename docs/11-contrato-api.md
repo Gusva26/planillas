@@ -51,6 +51,15 @@ Toda respuesta `4xx`/`5xx` usa `application/problem+json` (RFC 9457):
 | `VALIDACION` | 422 | Campos inválidos o faltantes |
 | `ERROR_INTERNO` | 500 | Fallo no clasificado; nunca expone `str(exc)` |
 
+### Identificador de correlación
+
+Toda respuesta lleva `X-Request-ID`. El servidor respeta el valor que envíe el
+cliente y, si falta, genera uno. Ese mismo valor aparece como `request_id` en
+la línea JSON que el servicio registra para la petición, de modo que un reporte
+de error se puede rastrear hasta el log sin adivinar. En los `5xx` conviene
+mostrar ese identificador al usuario: es lo único que permite encontrar la
+causa.
+
 ## Listados paginados
 
 Todo listado que crece sin techo (`auditoria`, y a medida que se migren los

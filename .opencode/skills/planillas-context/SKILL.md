@@ -120,8 +120,12 @@ cd frontend; npm run build                    # tsc + vite build -> dist/
 
 - El frontend habla con `/api` en el mismo origen; en dev con Vite hace falta
   proxy o `VITE_API_URL`. Revisá `frontend/vite.config.ts` antes de tocar URLs.
-- CORS está en `allow_origins=['*']` con credenciales: es intencional para
-  desarrollo, no lo copies a producción sin revisar.
+- CORS ya no usa comodín: solo los orígenes de `CAFAE_CORS_ORIGINS` (por
+  defecto los de Vite en 5173) y sin credenciales, porque la sesión viaja en
+  `Authorization`. Si el frontend corre en otro puerto, agregalo ahí.
+- Cada respuesta lleva `X-Request-ID` y cada petición deja una línea JSON en el
+  log (`cafae/logging_conf.py`). Uvicorn corre con `--no-access-log` para no
+  duplicar el registro.
 - Los tests usan `sys.path.insert(0, '/app')`: el código se ejecuta dentro del
   contenedor, no en Windows directamente.
 - Hay una sola UI: React (`frontend/src/`). Streamlit se retiró (ADR-005); si
