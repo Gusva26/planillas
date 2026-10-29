@@ -127,7 +127,7 @@ capa HTTP.
 | D-08 | Resuelto (era Medio) | Log JSON por línea (`cafae/logging_conf.py`) con `request_id` propagado por `ContextVar`; middleware que acepta o genera `X-Request-ID`, lo devuelve en la respuesta y mide la duración. Uvicorn arranca con `--no-access-log` para no duplicar | `cafae/logging_conf.py`; `api/main.py`; `Dockerfile` | 28/10 |
 | D-09 | Resuelto (era Medio) | CORS sin comodín: solo los orígenes de desarrollo (`CAFAE_CORS_ORIGINS` los reemplaza) y `allow_credentials=False`, porque la sesión viaja en `Authorization` y no en cookies | `api/main.py`; `tests/api/test_contrato.py` | 28/10 |
 | D-10 | Resuelto (era Medio) | Contrato tipado en el cliente: `apiRequest<T>` sin `any`, `ApiError` sobre RFC 9457, `Pagina[T]` estándar y `usePaginacion`. Queda un `any` documentado en `ReportesView` porque los 9 reportes no tienen esquema propio | `frontend/src/api/`; `frontend/src/hooks/usePaginacion.ts` | 2 |
-| D-11 | Medio | Conexión nueva por transacción, sin pool: techo de concurrencia desconocido | `cafae/db.py:17-23` | 3 (medir) |
+| D-11 | Resuelto (era Medio) | Medido: abrir conexión cuesta ~9,4 ms y la consulta ~0,2 ms. Sin errores hasta 64 hilos concurrentes, pero el techo de peticiones se estanca en ~340 ops/s. Se cierra **sin pool**: la carga real (una transacción por petición, uso humano) está dos órdenes de magnitud por debajo. Queda un disparador documentado para reabrirlo | `scripts/medir_concurrencia.py`; `cafae/db.py:17-23` | 3 |
 | D-12 | Bajo | Este documento describía un sistema distinto al implementado | `docs/02-arquitectura.md` | 1 (resuelto) |
 
 **Hotfix 28/10/2026.** D-01, D-02 y D-05 quedaron cerrados:
@@ -195,6 +195,36 @@ credenciales: solo los orígenes de desarrollo, configurables con
 `Authorization`. El `except Exception` del `/bundle` desapareció, y el proxy de
 Vite apunta al puerto real (8501). Pruebas: 114.
 
+**Medición de concurrencia 28/10/2026 (D-11).** `scripts/medir_concurrencia.py`
+levantó una base desechable, migró, creó un administrador y midió tres rutas a
+1, 4, 8, 16, 32 y 64 hilos: `SELECT 1` abriendo conexión por operación,
+`SELECT 1` sobre una conexión ya abierta (control) y
+`CatalogoService.list_niveles` como lectura real. El servidor tiene
+`max_connections = 100`.
+
+| ruta | p50 a 1 hilo | p50 a 64 hilos | techo observado |
+| --- | --- | --- | --- |
+| `SELECT 1` con conexión nueva | 9,6 ms | 177 ms | ~340 ops/s |
+| `SELECT 1` reutilizando conexión | 0,2 ms | 14,7 ms | ~1 600-2 200 ops/s |
+| `list_niveles` | 15,4 ms | 257 ms | ~220 ops/s |
+
+Abrir conexión cuesta ~9,4 ms; la consulta trivial, ~0,2 ms. Con `list_niveles`,
+que hace trabajo real, la conexión sigue siendo cerca del 60 % de la latencia
+en reposo. La latencia crece de forma lineal con los hilos en las tres rutas
+—se satura, no se degrada— y no hubo **ni un error** hasta 64 hilos: los 100
+slots no son el límite a esa concurrencia.
+
+**Decisión: no se agrega pool todavía.** El sistema abre una transacción por
+petición (no hay bucles de una transacción por fila: los 51 usos de
+`transaction()` en `catalogos.py` y los 14 de `reportes.py` son uno por método)
+y su carga es humana: dos órdenes de magnitud por debajo de los ~340 ops/s
+medidos. El costo real es ~9 ms fijos por petición, imperceptibles en la UI, a
+cambio de una dependencia nueva (`psycopg_pool`), un ciclo de vida de
+*startup/shutdown* y pruebas de fuga. **Se reabre si** aparece un endpoint que
+necesite más de ~300 ops/s o un p95 por encima de 100 ms atribuible a la
+conexión, o si el despliegue pasa a más de un worker de uvicorn: cada worker
+usa hasta 40 hilos y varios workers podrían superar los 100 slots del servidor.
+
 **Retiro de Streamlit 28/10/2026.** Se ejecutó el plan de ADR-005: se
 eliminaron `app.py`, `cafae/ui/` y `.streamlit/`, la dependencia `streamlit`
 salió de `requirements.txt` y `requirements.lock`, el `Dockerfile` dejó de
@@ -204,8 +234,9 @@ Los cuatro casos de UI basados en `AppTest` se retiraron de
 
 ### Riesgos abiertos
 
-- **Capacidad desconocida**: sin pool ni métricas no se puede afirmar cuántos
-  usuarios concurrentes soporta el sistema.
+- **Capacidad medida, no ilimitada**: sin pool, el techo está en ~340 ops/s y
+  ~9 ms fijos por petición; alcanza para el uso actual, pero un despliegue con
+  varios workers de uvicorn podría agotar los 100 slots del servidor. Ver D-11.
 - **Token en `localStorage`**: un XSS escala a robo de sesión completa.
 - **TXT bancario**: el formato ya está implementado y probado, pero D.5 lo
   mantiene bloqueado hasta la especificación oficial.
