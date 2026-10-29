@@ -10,6 +10,14 @@ class UserError(Exception):
     """Error esperado cuyo texto puede mostrarse al usuario."""
 
 
+class NoEncontrado(UserError):
+    """El recurso pedido no existe; el API lo traduce a `404 NO_ENCONTRADO`."""
+
+
+class Conflicto(UserError):
+    """La operación choca con datos existentes; el API responde `409 CONFLICTO_ESTADO`."""
+
+
 class AccessError(UserError):
     pass
 

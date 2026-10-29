@@ -103,19 +103,108 @@ class ReporteService:
         with self.auth.data_transaction(token, 'consultar') as (conn, _):
             return conn.execute(sql, (version_id,)).fetchall()
 
-    # 3. Importe por meta
+    # 3. Importe por meta (Hoja de Trabajo de Remuneraciones Oficial)
     def reporte_importe_por_meta(self, token, version_id):
-        sql = '''SELECT pd.meta_codigo,
-                        COALESCE(pd.meta_descripcion, 'Sin meta asignada') AS meta_descripcion,
-                        count(pd.id) AS cantidad_trabajadores,
-                        sum(pd.importe) AS total_importe,
-                        sum(pd.neto) AS total_neto
-                 FROM planilla_detalle pd
-                 WHERE pd.version_id = %s
-                 GROUP BY pd.meta_codigo, pd.meta_descripcion
-                 ORDER BY pd.meta_codigo ASC'''
         with self.auth.data_transaction(token, 'consultar') as (conn, _):
-            return conn.execute(sql, (version_id,)).fetchall()
+            curr_v = conn.execute('''
+                SELECT p.id AS planilla_id, p.periodo_id, p.tipo, per.anio, per.mes, pv.numero
+                FROM planilla_versiones pv
+                JOIN planillas p ON p.id = pv.planilla_id
+                JOIN periodos per ON per.id = p.periodo_id
+                WHERE pv.id = %s
+            ''', (version_id,)).fetchone()
+            if not curr_v:
+                raise UserError('Versión no encontrada.')
+
+            # Consultar exclusivamente las metas presentes en esta versión de planilla seleccionada
+            rows = conn.execute('''
+                SELECT 
+                    COALESCE(NULLIF(btrim(pd.meta_codigo), ''), 'S/M') AS meta_codigo,
+                    COALESCE(pd.meta_descripcion, 'Sin Descripción') AS meta_descripcion,
+                    count(pd.id) AS cantidad_trabajadores,
+                    sum(pd.importe) AS total_importe
+                FROM planilla_detalle pd
+                WHERE pd.version_id = %s
+                GROUP BY pd.meta_codigo, pd.meta_descripcion
+                ORDER BY pd.meta_codigo ASC
+            ''', (version_id,)).fetchall()
+
+            tipo = curr_v['tipo']
+            metas_map = {}
+            for r in rows:
+                m = str(r['meta_codigo']).strip().lstrip('0')
+                imp = float(r['total_importe'] or 0.0)
+                metas_map[m] = metas_map.get(m, 0.0) + imp
+
+            if tipo == 'SEDE':
+                # Sede Central: agrupa los fondos de la meta de Gestión
+                gestion = sum(float(r['total_importe'] or 0.0) for r in rows)
+                meta_num = '33'
+                for r in rows:
+                    cod = str(r['meta_codigo']).strip().lstrip('0')
+                    if cod in ('1', '33'):
+                        meta_num = '33' if cod == '33' else '01'
+
+                return {
+                    'tipo': 'SEDE',
+                    'anio': curr_v['anio'],
+                    'mes': curr_v['mes'],
+                    'gestion': gestion,
+                    'meta_gestion': meta_num,
+                    'total_general': gestion,
+                    'metas_lista': [dict(r) for r in rows]
+                }
+            else:
+                # II.EE.: agrupa los fondos de cada meta educativa encontrada en la planilla
+                inicial = metas_map.get('11', 0.0)
+                primaria = metas_map.get('12', 0.0)
+                secundaria = metas_map.get('14', 0.0)
+                basica_sub = inicial + primaria + secundaria
+
+                eba_inicial = metas_map.get('43', 0.0)
+                eba_avanzado = metas_map.get('44', 0.0)
+                eba_sub = eba_inicial + eba_avanzado
+
+                esp_inicial = metas_map.get('29', 0.0)
+                esp_primaria = metas_map.get('30', 0.0)
+                esp_sub = esp_inicial + esp_primaria
+
+                tec_prod = metas_map.get('42', 0.0)
+
+                # Identificar metas adicionales que no pertenezcan al estándar
+                codigos_estandar = {'11', '12', '14', '43', '44', '29', '30', '42'}
+                otras_metas = []
+                for r in rows:
+                    m = str(r['meta_codigo']).strip().lstrip('0')
+                    if m not in codigos_estandar:
+                        otras_metas.append({
+                            'meta_codigo': r['meta_codigo'],
+                            'meta_descripcion': r['meta_descripcion'],
+                            'importe': float(r['total_importe'] or 0.0)
+                        })
+
+                total_general = sum(float(r['total_importe'] or 0.0) for r in rows)
+
+                return {
+                    'tipo': 'IIEE',
+                    'anio': curr_v['anio'],
+                    'mes': curr_v['mes'],
+                    'gestion': 0.0,
+                    'basica_sub': basica_sub,
+                    'inicial': inicial,
+                    'primaria': primaria,
+                    'secundaria': secundaria,
+                    'eba_sub': eba_sub,
+                    'eba_inicial': eba_inicial,
+                    'eba_avanzado': eba_avanzado,
+                    'esp_sub': esp_sub,
+                    'esp_inicial': esp_inicial,
+                    'esp_primaria': esp_primaria,
+                    'tec_prod': tec_prod,
+                    'otras_metas': otras_metas,
+                    'total_general': total_general,
+                    'metas_lista': [dict(r) for r in rows]
+                }
 
     # 4. Descuentos por entidad
     def reporte_descuentos_por_entidad(self, token, version_id):
@@ -182,10 +271,95 @@ class ReporteService:
     # 9. Comparación mensual
     def reporte_comparacion_mensual(self, token, version_id_1, version_id_2):
         sql = '''SELECT pv.id AS version_id, p.tipo, per.anio, per.mes, pv.numero,
-                        pv.total_trabajadores, pv.total_importe, pv.total_descuentos, pv.total_neto
+                        COALESCE(pv.total_trabajadores, (SELECT count(*) FROM planilla_detalle WHERE version_id = pv.id)) AS total_trabajadores,
+                        COALESCE(pv.total_importe, (SELECT sum(importe) FROM planilla_detalle WHERE version_id = pv.id)) AS total_importe,
+                        COALESCE(pv.total_descuentos, (SELECT sum(total_descuentos) FROM planilla_detalle WHERE version_id = pv.id)) AS total_descuentos,
+                        COALESCE(pv.total_neto, (SELECT sum(neto) FROM planilla_detalle WHERE version_id = pv.id)) AS total_neto
                  FROM planilla_versiones pv
                  JOIN planillas p ON p.id = pv.planilla_id
                  JOIN periodos per ON per.id = p.periodo_id
-                 WHERE pv.id IN (%s, %s)'''
+                 WHERE pv.id IN (%s, %s)
+                 ORDER BY per.anio ASC, per.mes ASC, pv.numero ASC'''
         with self.auth.data_transaction(token, 'consultar') as (conn, _):
             return conn.execute(sql, (version_id_1, version_id_2)).fetchall()
+
+    def reporte_comparativo_mes_anterior(self, token, version_id):
+        with self.auth.data_transaction(token, 'consultar') as (conn, _):
+            curr = conn.execute(
+                '''SELECT p.id AS planilla_id, p.tipo, per.anio, per.mes, pv.numero
+                   FROM planilla_versiones pv
+                   JOIN planillas p ON p.id = pv.planilla_id
+                   JOIN periodos per ON per.id = p.periodo_id
+                   WHERE pv.id = %s''', (version_id,)
+            ).fetchone()
+            if not curr:
+                raise UserError('Versión no encontrada.')
+
+            prev = conn.execute(
+                '''SELECT pv.id
+                   FROM planilla_versiones pv
+                   JOIN planillas p ON p.id = pv.planilla_id
+                   JOIN periodos per ON per.id = p.periodo_id
+                   WHERE p.tipo = %s AND (per.anio < %s OR (per.anio = %s AND per.mes < %s) OR (p.id = %s AND pv.numero < %s))
+                   ORDER BY per.anio DESC, per.mes DESC, pv.numero DESC LIMIT 1''',
+                (curr['tipo'], curr['anio'], curr['anio'], curr['mes'], curr['planilla_id'], curr['numero'])
+            ).fetchone()
+
+            v_prev_id = prev['id'] if prev else version_id
+            sql = '''SELECT pv.id AS version_id, p.tipo, per.anio, per.mes, pv.numero,
+                            COALESCE(pv.total_trabajadores, (SELECT count(*) FROM planilla_detalle WHERE version_id = pv.id)) AS total_trabajadores,
+                            COALESCE(pv.total_importe, (SELECT sum(importe) FROM planilla_detalle WHERE version_id = pv.id)) AS total_importe,
+                            COALESCE(pv.total_descuentos, (SELECT sum(total_descuentos) FROM planilla_detalle WHERE version_id = pv.id)) AS total_descuentos,
+                            COALESCE(pv.total_neto, (SELECT sum(neto) FROM planilla_detalle WHERE version_id = pv.id)) AS total_neto
+                     FROM planilla_versiones pv
+                     JOIN planillas p ON p.id = pv.planilla_id
+                     JOIN periodos per ON per.id = p.periodo_id
+                     WHERE pv.id IN (%s, %s)
+                     ORDER BY per.anio ASC, per.mes ASC, pv.numero ASC'''
+            return conn.execute(sql, (v_prev_id, version_id)).fetchall()
+
+    # General de Descuentos Detallado
+    def reporte_general_descuentos(self, token, version_id):
+        sql = '''SELECT pd.dni, pd.apellidos, pd.nombres,
+                        COALESCE(pd.institucion_nombre, pd.area_nombre, 'SIN ASIGNACIÓN') AS adscripcion,
+                        pd.importe,
+                        COALESCE((SELECT monto FROM planilla_descuentos WHERE detalle_id = pd.id AND tipo_descuento_id = 1), 0.00) AS pichincha,
+                        COALESCE((SELECT monto FROM planilla_descuentos WHERE detalle_id = pd.id AND tipo_descuento_id = 2), 0.00) AS caja_sullana,
+                        COALESCE((SELECT monto FROM planilla_descuentos WHERE detalle_id = pd.id AND tipo_descuento_id = 3), 0.00) AS sub_cafae,
+                        COALESCE((SELECT monto FROM planilla_descuentos WHERE detalle_id = pd.id AND tipo_descuento_id = 4), 0.00) AS brenta,
+                        COALESCE((SELECT monto FROM planilla_descuentos WHERE detalle_id = pd.id AND tipo_descuento_id = 5), 0.00) AS sitrase,
+                        COALESCE((SELECT monto FROM planilla_descuentos WHERE detalle_id = pd.id AND tipo_descuento_id = 6), 0.00) AS sitase,
+                        pd.monto_licencia AS licencia,
+                        COALESCE((SELECT monto FROM planilla_descuentos WHERE detalle_id = pd.id AND tipo_descuento_id = 7), 0.00) AS otros,
+                        pd.total_descuentos,
+                        pd.neto
+                 FROM planilla_detalle pd
+                 WHERE pd.version_id = %s
+                 ORDER BY pd.apellidos ASC, pd.nombres ASC'''
+        with self.auth.data_transaction(token, 'consultar') as (conn, _):
+            return conn.execute(sql, (version_id,)).fetchall()
+
+    # Modalidad de Pago
+    def reporte_modalidad_pago(self, token, version_id):
+        sql = '''SELECT COALESCE(pd.tipo_pago, 'CUENTA') AS modalidad,
+                        count(pd.id) AS cantidad_personas,
+                        sum(pd.importe) AS total_importe,
+                        sum(pd.total_descuentos) AS total_descuentos,
+                        sum(pd.neto) AS total_neto
+                 FROM planilla_detalle pd
+                 WHERE pd.version_id = %s
+                 GROUP BY pd.tipo_pago
+                 ORDER BY cantidad_personas DESC'''
+        with self.auth.data_transaction(token, 'consultar') as (conn, _):
+            return conn.execute(sql, (version_id,)).fetchall()
+
+    # Padrón Alfabético
+    def reporte_padron_alfabetico(self, token, version_id):
+        sql = '''SELECT pd.dni, pd.apellidos, pd.nombres,
+                        COALESCE(pd.institucion_nombre, pd.area_nombre, 'SIN ASIGNACIÓN') AS adscripcion,
+                        pd.cargo, pd.categoria, pd.cuenta_multired, pd.importe, pd.total_descuentos, pd.neto
+                 FROM planilla_detalle pd
+                 WHERE pd.version_id = %s
+                 ORDER BY pd.apellidos ASC, pd.nombres ASC'''
+        with self.auth.data_transaction(token, 'consultar') as (conn, _):
+            return conn.execute(sql, (version_id,)).fetchall()

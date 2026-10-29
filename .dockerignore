@@ -5,7 +5,6 @@
 !assets/**
 !cafae/
 !cafae/**
-!app.py
 !frontend/
 !frontend/**
 !Dockerfile

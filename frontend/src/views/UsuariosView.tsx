@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import { apiRequest } from '../api/client';
+import { mensajeDeError } from '../api/errors';
 import { UserAccount } from '../types';
 import { Modal } from '../components/Modal';
-import { UserCog, Plus, Key, ShieldCheck, CheckCircle2 } from 'lucide-react';
+import { UserCog, Plus, Key, ShieldCheck, CheckCircle2, User, Lock, AlertCircle } from 'lucide-react';
 
 export const UsuariosView: React.FC = () => {
   const [users, setUsers] = useState<UserAccount[]>([]);
@@ -23,8 +24,8 @@ export const UsuariosView: React.FC = () => {
     try {
       const list = await apiRequest<UserAccount[]>('/api/users');
       setUsers(list);
-    } catch (err: any) {
-      setErrorMsg(err.message || 'Error al cargar usuarios.');
+    } catch (err) {
+      setErrorMsg(mensajeDeError(err, 'Error al cargar usuarios.'));
     } finally {
       setLoading(false);
     }
@@ -49,8 +50,8 @@ export const UsuariosView: React.FC = () => {
       setIsCreateOpen(false);
       setCreateForm({ username: '', nombre_completo: '', rol: 'PLANILLAS', password_temporal: '' });
       loadUsers();
-    } catch (err: any) {
-      setErrorMsg(err.message || 'Error al crear usuario.');
+    } catch (err) {
+      setErrorMsg(mensajeDeError(err, 'Error al crear usuario.'));
     }
   };
 
@@ -73,28 +74,62 @@ export const UsuariosView: React.FC = () => {
       setIsResetOpen(false);
       setResetPass('');
       loadUsers();
-    } catch (err: any) {
-      setErrorMsg(err.message || 'Error al restablecer contraseña.');
+    } catch (err) {
+      setErrorMsg(mensajeDeError(err, 'Error al restablecer contraseña.'));
     }
   };
 
   return (
     <div className="page-container">
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1.5rem', flexWrap: 'wrap', gap: '1rem' }}>
+      {/* Encabezado */}
+      <div style={{
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        marginBottom: '1.75rem',
+        flexWrap: 'wrap',
+        gap: '1rem'
+      }}>
         <div>
-          <h2 style={{ fontSize: '1.25rem', marginBottom: '0.25rem' }}>Gestión de Cuentas de Acceso</h2>
-          <p style={{ fontSize: '0.85rem' }}>Administración de operadores y roles institucionales del sistema.</p>
+          <span style={{ fontSize: '0.725rem', fontWeight: 700, color: '#2563EB', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+            Seguridad y Accesos
+          </span>
+          <h2 style={{ fontSize: '1.35rem', marginTop: '0.15rem', marginBottom: '0.2rem', color: '#0F172A', fontWeight: 800 }}>
+            Gestión de Cuentas y Operadores
+          </h2>
+          <p style={{ fontSize: '0.85rem', color: '#64748B', margin: 0 }}>
+            Administración de credenciales con cifrado Argon2id, roles institucionales y políticas de contraseña.
+          </p>
         </div>
 
-        <button onClick={() => setIsCreateOpen(true)} className="btn btn-primary">
+        <button 
+          onClick={() => {
+            setErrorMsg(null);
+            setIsCreateOpen(true);
+          }} 
+          className="btn btn-primary"
+          style={{ fontWeight: 700 }}
+        >
           <Plus size={16} />
-          <span>Crear Usuario</span>
+          <span>Crear Nuevo Operador</span>
         </button>
       </div>
 
       {errorMsg && (
-        <div style={{ background: '#FEE2E2', border: '1px solid #FECACA', padding: '0.75rem', borderRadius: 'var(--radius-md)', color: '#B91C1C', marginBottom: '1.25rem', fontSize: '0.85rem' }}>
-          {errorMsg}
+        <div style={{
+          background: '#FEF2F2',
+          border: '1.5px solid #FECACA',
+          padding: '0.85rem 1.25rem',
+          borderRadius: 'var(--radius-md)',
+          color: '#991B1B',
+          marginBottom: '1.5rem',
+          fontSize: '0.85rem',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '0.5rem'
+        }}>
+          <AlertCircle size={17} style={{ color: '#DC2626' }} />
+          <span>{errorMsg}</span>
         </div>
       )}
 
@@ -103,40 +138,46 @@ export const UsuariosView: React.FC = () => {
         <table className="table">
           <thead>
             <tr>
-              <th>Usuario</th>
-              <th>Nombre Completo</th>
-              <th>Rol Institucional</th>
-              <th>Estado</th>
-              <th>Cambio de Contraseña</th>
-              <th style={{ textAlign: 'center' }}>Acciones</th>
+              <th style={{ width: '120px' }}>Cuenta (Login)</th>
+              <th>Nombre Completo del Operador</th>
+              <th style={{ width: '160px' }}>Rol Institucional</th>
+              <th style={{ width: '100px', textAlign: 'center' }}>Estado</th>
+              <th style={{ width: '160px', textAlign: 'center' }}>Política de Clave</th>
+              <th style={{ textAlign: 'center', width: '140px' }}>Acciones</th>
             </tr>
           </thead>
           <tbody>
             {loading ? (
               <tr>
-                <td colSpan={6} style={{ textAlign: 'center', padding: '3rem' }}>Cargando usuarios...</td>
+                <td colSpan={6} style={{ textAlign: 'center', padding: '3.5rem', color: '#64748B' }}>
+                  Cargando directorio de operadores...
+                </td>
               </tr>
             ) : (
               users.map((u) => (
                 <tr key={u.id}>
-                  <td className="mono-amount" style={{ fontWeight: 700, color: 'var(--teal-500)' }}>{u.usuario}</td>
-                  <td style={{ fontWeight: 600 }}>{u.nombre_completo}</td>
+                  <td className="mono-amount" style={{ fontWeight: 700, color: '#1D4ED8' }}>
+                    {u.usuario}
+                  </td>
+                  <td>
+                    <div style={{ fontWeight: 700, color: '#0F172A' }}>{u.nombre_completo}</div>
+                  </td>
                   <td>
                     <span className={`badge ${
-                      u.rol === 'ADMINISTRADOR' ? 'badge-teal' :
-                      u.rol === 'PLANILLAS' ? 'badge-indigo' : 'badge-muted'
+                      u.rol === 'ADMINISTRADOR' ? 'badge-indigo' :
+                      u.rol === 'PLANILLAS' ? 'badge-teal' : 'badge-muted'
                     }`}>
                       {u.rol}
                     </span>
                   </td>
-                  <td>
+                  <td style={{ textAlign: 'center' }}>
                     <span className={`badge ${u.activo ? 'badge-emerald' : 'badge-crimson'}`}>
                       {u.activo ? 'Activo' : 'Inactivo'}
                     </span>
                   </td>
-                  <td>
+                  <td style={{ textAlign: 'center' }}>
                     <span className={`badge ${u.debe_cambiar_password ? 'badge-amber' : 'badge-emerald'}`}>
-                      {u.debe_cambiar_password ? 'Pendiente' : 'Al día'}
+                      {u.debe_cambiar_password ? 'Cambio Pendiente' : 'Actualizada'}
                     </span>
                   </td>
                   <td style={{ textAlign: 'center' }}>
@@ -147,10 +188,11 @@ export const UsuariosView: React.FC = () => {
                         setErrorMsg(null);
                         setIsResetOpen(true);
                       }}
-                      className="btn btn-ghost btn-sm"
-                      title="Restablecer Contraseña"
+                      className="btn btn-secondary btn-sm"
+                      style={{ padding: '0.3rem 0.65rem' }}
+                      title="Restablecer Contraseña temporal"
                     >
-                      <Key size={15} style={{ color: 'var(--amber-500)' }} />
+                      <Key size={13} style={{ color: '#D97706' }} />
                       <span>Restablecer</span>
                     </button>
                   </td>
@@ -162,7 +204,7 @@ export const UsuariosView: React.FC = () => {
       </div>
 
       {/* Modal Crear Usuario */}
-      <Modal isOpen={isCreateOpen} onClose={() => setIsCreateOpen(false)} title="Crear Nueva Cuenta de Usuario">
+      <Modal isOpen={isCreateOpen} onClose={() => setIsCreateOpen(false)} title="Crear Nueva Cuenta de Operador">
         <form onSubmit={handleCreateUser}>
           <div className="form-group">
             <label className="form-label">Nombre de Usuario (Login) *</label>
@@ -177,7 +219,7 @@ export const UsuariosView: React.FC = () => {
           </div>
 
           <div className="form-group">
-            <label className="form-label">Nombre Completo *</label>
+            <label className="form-label">Nombre Completo del Servidor *</label>
             <input
               type="text"
               className="form-input"
@@ -189,7 +231,7 @@ export const UsuariosView: React.FC = () => {
           </div>
 
           <div className="form-group">
-            <label className="form-label">Rol Asignado *</label>
+            <label className="form-label">Rol Institucional *</label>
             <select
               className="form-select"
               value={createForm.rol}
@@ -211,12 +253,12 @@ export const UsuariosView: React.FC = () => {
               onChange={(e) => setCreateForm({ ...createForm, password_temporal: e.target.value })}
               required
             />
-            <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-              El usuario estará obligado a cambiarla en su primer inicio de sesión.
+            <span style={{ fontSize: '0.75rem', color: '#64748B', marginTop: '2px' }}>
+              El usuario estará forzado a cambiarla obligatoriamente en su primer ingreso.
             </span>
           </div>
 
-          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '1rem', marginTop: '1.5rem', borderTop: '1px solid var(--border-subtle)', paddingTop: '1rem' }}>
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem', marginTop: '1.5rem', borderTop: '1px solid var(--border-subtle)', paddingTop: '1.25rem' }}>
             <button type="button" onClick={() => setIsCreateOpen(false)} className="btn btn-secondary">Cancelar</button>
             <button type="submit" className="btn btn-primary">Registrar Cuenta</button>
           </div>
@@ -226,11 +268,11 @@ export const UsuariosView: React.FC = () => {
       {/* Modal Restablecer Contraseña */}
       <Modal isOpen={isResetOpen} onClose={() => setIsResetOpen(false)} title={`Restablecer Contraseña · ${selectedUser?.usuario}`}>
         <form onSubmit={handleResetPassword}>
-          <p style={{ fontSize: '0.85rem', marginBottom: '1rem' }}>
-            Ingresa una nueva contraseña temporal para <strong>{selectedUser?.nombre_completo}</strong>:
+          <p style={{ fontSize: '0.85rem', color: '#475569', marginBottom: '1.25rem' }}>
+            Ingresa una nueva contraseña temporal para el operador <strong>{selectedUser?.nombre_completo}</strong>:
           </p>
           <div className="form-group">
-            <label className="form-label">Nueva Contraseña Temporal *</label>
+            <label className="form-label">Nueva Contraseña Temporal * (mínimo 12 caracteres)</label>
             <input
               type="password"
               className="form-input"
@@ -240,9 +282,9 @@ export const UsuariosView: React.FC = () => {
               required
             />
           </div>
-          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '1rem', marginTop: '1.5rem', borderTop: '1px solid var(--border-subtle)', paddingTop: '1rem' }}>
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem', marginTop: '1.5rem', borderTop: '1px solid var(--border-subtle)', paddingTop: '1.25rem' }}>
             <button type="button" onClick={() => setIsResetOpen(false)} className="btn btn-secondary">Cancelar</button>
-            <button type="submit" className="btn btn-primary">Guardar Nueva Contraseña</button>
+            <button type="submit" className="btn btn-primary">Guardar Nueva Clave</button>
           </div>
         </form>
       </Modal>

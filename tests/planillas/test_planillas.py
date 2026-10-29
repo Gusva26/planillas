@@ -2,21 +2,23 @@
 Se ejecuta contra base de datos aislada cafae_test_*.
 """
 from decimal import Decimal
+import contextlib
 import os
 import secrets
 import sys
 import unittest
 import uuid
+from unittest import mock
 
 sys.path.insert(0, '/app')
 
 from cafae.auth import AuthService
 from cafae.calculos import (calcular_licencia, calcular_liquidacion_trabajador,
-                            calcular_totales_planilla, parse_monto)
+                            calcular_totales_planilla)
 from cafae.catalogos import CatalogoService
 from cafae.planillas import PlanillaService
 from cafae.trabajadores import TrabajadorService
-from cafae.security import AccessError, UserError
+from cafae.security import AccessError, NoEncontrado, UserError
 
 if not os.environ.get('CAFAE_DB_NAME', '').startswith('cafae_test_'):
     raise SystemExit('Estas pruebas requieren una base cafae_test_* aislada.')
@@ -42,6 +44,11 @@ class TestPlanillasYCAlculos(unittest.TestCase):
 
         # Catálogos base
         self.nivel_id = CAT.create_nivel(self.admin_token, f'Niv {uuid.uuid4().hex[:6]}')
+        # El cierre exige meta_codigo y categoria en cada fila del detalle.
+        meta_id = CAT.create_meta(self.admin_token, f'M{uuid.uuid4().hex[:4]}', 'Educación Primaria')
+        CAT.set_nivel_meta(self.admin_token, self.nivel_id, meta_id)
+        self.categoria_id = CAT.create_categoria(
+            self.admin_token, f'A{uuid.uuid4().hex[:4]}', 'Profesional')
         self.inst_id = CAT.create_institucion(
             self.admin_token, f'0{uuid.uuid4().int % 9000000 + 1000000}',
             'Colegio Primaria', self.nivel_id, 'Chepén'
@@ -61,7 +68,10 @@ class TestPlanillasYCAlculos(unittest.TestCase):
             'nombres': 'Luis',
             'tipo': 'IIEE',
             'institucion_id': self.inst_id,
+            'nivel_id': self.nivel_id,
+            'categoria_id': self.categoria_id,
             'importe': Decimal('1350.00'),
+            'cuenta_multired': '00123456789',
             'activo': True
         })
         self.t2_id = TRAB.create_trabajador(self.admin_token, {
@@ -70,7 +80,10 @@ class TestPlanillasYCAlculos(unittest.TestCase):
             'nombres': 'Pedro',
             'tipo': 'IIEE',
             'institucion_id': self.inst_id,
+            'nivel_id': self.nivel_id,
+            'categoria_id': self.categoria_id,
             'importe': Decimal('1350.00'),
+            'cuenta_multired': '00987654321',
             'activo': False
         })
         self.t_sede_id = TRAB.create_trabajador(self.admin_token, {
@@ -79,7 +92,10 @@ class TestPlanillasYCAlculos(unittest.TestCase):
             'nombres': 'María',
             'tipo': 'SEDE',
             'area_id': self.area_id,
+            'nivel_id': self.nivel_id,
+            'categoria_id': self.categoria_id,
             'importe': Decimal('1800.00'),
+            'cuenta_multired': '00555666777',
             'activo': True
         })
 
@@ -139,17 +155,24 @@ class TestPlanillasYCAlculos(unittest.TestCase):
     # 2. Creación desde Maestro (PER-01, PER-02, PER-03)
     # -------------------------------------------------------------------------
     def test_creacion_desde_maestro_y_unicidad(self):
-        # PER-03: Solo activos incluidos, descuentos iniciales en 0.00
+        # PER-03: Solo activos incluidos, descuentos iniciales en 0.00.
+        # El maestro es global y cada test deja trabajadores activos, así que
+        # se verifica la inclusión/exclusión por DNI, no un conteo fijo.
         res = PLAN.crear_desde_maestro(self.admin_token, 2026, 9, 'IIEE')
-        self.assertEqual(res['trabajadores_copiados'], 1)  # Solo t1_id (t2_id está inactivo)
 
         v_id = res['version_id']
         det = PLAN.get_detalle_version(self.admin_token, v_id)
-        self.assertEqual(len(det), 1)
-        self.assertEqual(det[0]['dni'], TRAB.get_trabajador(self.admin_token, self.t1_id)['dni'])
-        self.assertEqual(det[0]['importe'], Decimal('1350.00'))
-        self.assertEqual(det[0]['total_descuentos'], Decimal('0.00'))
-        self.assertEqual(det[0]['neto'], Decimal('1350.00'))
+        self.assertEqual(res['trabajadores_copiados'], len(det))
+
+        dnis = {fila['dni'] for fila in det}
+        self.assertIn(TRAB.get_trabajador(self.admin_token, self.t1_id)['dni'], dnis)
+        self.assertNotIn(TRAB.get_trabajador(self.admin_token, self.t2_id)['dni'], dnis)
+
+        fila_t1 = next(f for f in det
+                       if f['dni'] == TRAB.get_trabajador(self.admin_token, self.t1_id)['dni'])
+        self.assertEqual(fila_t1['importe'], Decimal('1350.00'))
+        self.assertEqual(fila_t1['total_descuentos'], Decimal('0.00'))
+        self.assertEqual(fila_t1['neto'], Decimal('1350.00'))
 
         # PER-01: Duplicado del mismo periodo y tipo rechazado
         with self.assertRaises(UserError):
@@ -168,8 +191,12 @@ class TestPlanillasYCAlculos(unittest.TestCase):
         det = PLAN.get_detalle_version(self.admin_token, v_id)
         row_id = det[0]['id']
 
-        # Editar descuentos y días de licencia
-        PLAN.guardar_edicion_lote(self.admin_token, v_id, revision_esperada=1, cambios=[{
+        # Editar descuentos y días de licencia.
+        # Las inserciones de detalle del maestro ya subieron revision_edicion:
+        # el cliente debe releerla antes de editar.
+        revision_actual = PLAN.get_planilla_version(
+            self.admin_token, res['planilla_id'])['revision_edicion']
+        PLAN.guardar_edicion_lote(self.admin_token, v_id, revision_esperada=revision_actual, cambios=[{
             'detalle_id': row_id,
             'importe': Decimal('1350.00'),
             'dias_licencia': 2,  # Licencia 2 días: 1350/30*2 = 90.00
@@ -200,23 +227,34 @@ class TestPlanillasYCAlculos(unittest.TestCase):
         p_id = res['planilla_id']
         v_id = res['version_id']
 
+        def revision_vigente():
+            return PLAN.get_planilla_version(
+                self.admin_token, p_id)['revision_edicion']
+
         # 2. Intentar cerrar con 3 firmas (IIEE requiere 4) -> debe fallar
         with self.assertRaises(UserError):
-            PLAN.cerrar_version(self.admin_token, v_id, revision_esperada=1, firmas_ids=self.firmas[:3])
+            PLAN.cerrar_version(self.admin_token, v_id, revision_esperada=revision_vigente(),
+                                firmas_ids=self.firmas[:3])
 
         # 3. Operador NO puede cerrar planilla
         token_planillas = self.create_user('PLANILLAS')
         with self.assertRaises(AccessError):
-            PLAN.cerrar_version(token_planillas, v_id, revision_esperada=1, firmas_ids=self.firmas[:4])
+            PLAN.cerrar_version(token_planillas, v_id, revision_esperada=revision_vigente(),
+                                firmas_ids=self.firmas[:4])
 
         # 4. Administrador cierra con 4 firmas correctas
-        res_cierre = PLAN.cerrar_version(self.admin_token, v_id, revision_esperada=1, firmas_ids=self.firmas[:4])
-        self.assertEqual(res_cierre['total_trabajadores'], 1)
-        self.assertEqual(res_cierre['total_importe'], Decimal('1350.00'))
+        res_cierre = PLAN.cerrar_version(self.admin_token, v_id, revision_esperada=revision_vigente(),
+                                         firmas_ids=self.firmas[:4])
+        # El maestro es global: el cierre consolida todos los activos de II.EE.
+        det = PLAN.get_detalle_version(self.admin_token, v_id)
+        self.assertEqual(res_cierre['total_trabajadores'], len(det))
+        self.assertEqual(res_cierre['total_importe'],
+                         sum((f['importe'] for f in det), Decimal('0.00')))
 
         # Versión cerrada es inmutable: no se puede editar
         with self.assertRaises(Exception):
-            PLAN.guardar_edicion_lote(self.admin_token, v_id, revision_esperada=2, cambios=[])
+            PLAN.guardar_edicion_lote(self.admin_token, v_id, revision_esperada=revision_vigente(),
+                                      cambios=[])
 
         # 5. Reapertura: Operador NO puede reabrir
         with self.assertRaises(AccessError):
@@ -248,12 +286,124 @@ class TestPlanillasYCAlculos(unittest.TestCase):
         res_dic = PLAN.crear_desde_maestro(self.admin_token, 2025, 12, 'IIEE')
         p_dic_id = res_dic['planilla_id']
         v_dic_id = res_dic['version_id']
-        PLAN.cerrar_version(self.admin_token, v_dic_id, revision_esperada=1, firmas_ids=self.firmas[:4])
+        revision_dic = PLAN.get_planilla_version(
+            self.admin_token, p_dic_id)['revision_edicion']
+        PLAN.cerrar_version(self.admin_token, v_dic_id, revision_esperada=revision_dic,
+                            firmas_ids=self.firmas[:4])
 
         # PER-04 / Cruce de año: Copiar Dic 2025 a Ene 2026
         res_ene = PLAN.copiar_mes_anterior(self.admin_token, 2026, 1, 'IIEE')
         self.assertGreater(res_ene['version_id'], 0)
-        self.assertEqual(res_ene['trabajadores_copiados'], 1)
+        det_dic = PLAN.get_detalle_version(self.admin_token, v_dic_id)
+        det_ene = PLAN.get_detalle_version(self.admin_token, res_ene['version_id'])
+        self.assertEqual(res_ene['trabajadores_copiados'], len(det_ene))
+        self.assertEqual(len(det_ene), len(det_dic))
+
+
+class LecturaConsistenteDeVersion(unittest.TestCase):
+    """D-04: cada lectura de una versión se arma en una sola transacción.
+
+    No toca la base: `data_transaction` se reemplaza por un doble que cuenta
+    cuántas transacciones abre la lectura. Si vuelve a partirse en varias, la
+    cabecera y las líneas pueden venir de revisiones distintas.
+    """
+
+    def _servicio(self, abiertas, conexion):
+        @contextlib.contextmanager
+        def transaccion(token, permiso):
+            abiertas.append(permiso)
+            yield conexion, {}
+
+        servicio = PlanillaService.__new__(PlanillaService)
+        servicio.auth = mock.Mock()
+        servicio.auth.data_transaction.side_effect = transaccion
+        return servicio
+
+    def test_version_completa_abre_una_sola_transaccion(self):
+        abiertas = []
+
+        class Conexion:
+            def execute(self, sql, params=None):
+                cursor = mock.Mock()
+                if 'FROM planilla_versiones' in sql:
+                    cursor.fetchone.return_value = {'id': 7, 'cantidad_firmas': 4}
+                elif 'FROM planilla_firmas' in sql:
+                    cursor.fetchall.return_value = [{'posicion': 1}, {'posicion': 2}]
+                else:
+                    cursor.fetchall.return_value = []
+                return cursor
+
+        datos = self._servicio(abiertas, Conexion()).get_version_completa('token', 7)
+
+        self.assertEqual(abiertas, ['consultar'])
+        self.assertEqual(datos['version']['id'], 7)
+        self.assertEqual(len(datos['firmas']), 2)
+        self.assertEqual(datos['lineas'], [])
+
+    def test_version_completa_usa_el_permiso_recibido(self):
+        abiertas = []
+
+        class Conexion:
+            def execute(self, sql, params=None):
+                cursor = mock.Mock()
+                cursor.fetchone.return_value = {'id': 7, 'cantidad_firmas': 4}
+                cursor.fetchall.return_value = []
+                return cursor
+
+        self._servicio(abiertas, Conexion()).get_version_completa(
+            'token', 7, permiso='generar_documentos')
+
+        self.assertEqual(abiertas, ['generar_documentos'])
+
+    def test_version_inexistente_es_no_encontrado(self):
+        abiertas = []
+
+        class Conexion:
+            def execute(self, sql, params=None):
+                cursor = mock.Mock()
+                cursor.fetchone.return_value = None
+                return cursor
+
+        with self.assertRaises(NoEncontrado):
+            self._servicio(abiertas, Conexion()).get_version_completa('token', 404)
+
+        self.assertEqual(abiertas, ['consultar'])
+
+    def test_linea_y_version_salen_de_la_misma_transaccion(self):
+        abiertas = []
+
+        class Conexion:
+            def execute(self, sql, params=None):
+                cursor = mock.Mock()
+                if 'SELECT version_id FROM planilla_detalle' in sql:
+                    cursor.fetchone.return_value = {'version_id': 7}
+                elif 'FROM planilla_versiones' in sql:
+                    cursor.fetchone.return_value = {'id': 7, 'cantidad_firmas': 4}
+                elif 'FROM planilla_detalle pd' in sql:
+                    cursor.fetchall.return_value = [{'id': 11, 'dni': '12345678'}]
+                else:
+                    cursor.fetchall.return_value = []
+                return cursor
+
+        version, fila = self._servicio(abiertas, Conexion()).get_linea_con_version('token', 11)
+
+        self.assertEqual(abiertas, ['consultar'])
+        self.assertEqual(version['id'], 7)
+        self.assertEqual(fila['dni'], '12345678')
+
+    def test_linea_inexistente_es_no_encontrado(self):
+        abiertas = []
+
+        class Conexion:
+            def execute(self, sql, params=None):
+                cursor = mock.Mock()
+                cursor.fetchone.return_value = None
+                return cursor
+
+        with self.assertRaises(NoEncontrado):
+            self._servicio(abiertas, Conexion()).get_linea_con_version('token', 404)
+
+        self.assertEqual(abiertas, ['consultar'])
 
 
 if __name__ == '__main__':

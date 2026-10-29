@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { useAuth } from './context/AuthContext';
 import { apiRequest } from './api/client';
+import { mensajeDeError } from './api/errors';
 import { Sidebar } from './components/Sidebar';
 import { Header } from './components/Header';
 import { Modal } from './components/Modal';
@@ -90,8 +91,8 @@ export const AppContent: React.FC = () => {
       setRepeatPass('');
       alert('Contraseña actualizada con éxito. Inicia sesión nuevamente.');
       await logout();
-    } catch (err: any) {
-      setPassError(err.message || 'Error al cambiar contraseña.');
+    } catch (err) {
+      setPassError(mensajeDeError(err, 'Error al cambiar contraseña.'));
     } finally {
       setPassSaving(false);
     }

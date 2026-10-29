@@ -21,18 +21,34 @@ export const Modal: React.FC<ModalProps> = ({ isOpen, onClose, title, children, 
   if (!isOpen) return null;
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
+    <div 
+      className="modal-overlay" 
+      onClick={onClose}
+      role="dialog"
+      aria-modal="true"
+    >
       <div 
         className="modal-content" 
         style={{ maxWidth }} 
         onClick={(e) => e.stopPropagation()}
       >
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1.25rem', borderBottom: '1px solid var(--border-subtle)', paddingBottom: '0.75rem' }}>
-          <h2 style={{ fontSize: '1.2rem', margin: 0 }}>{title}</h2>
+        <div style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          marginBottom: '1.25rem',
+          borderBottom: '1px solid var(--border-subtle)',
+          paddingBottom: '0.85rem'
+        }}>
+          <h2 style={{ fontSize: '1.2rem', margin: 0, fontWeight: 700, color: '#0F172A', letterSpacing: '-0.02em' }}>
+            {title}
+          </h2>
           <button 
             onClick={onClose}
             className="btn btn-ghost btn-sm"
-            style={{ padding: '0.35rem', borderRadius: 'var(--radius-sm)' }}
+            style={{ padding: '0.4rem', borderRadius: 'var(--radius-sm)', color: '#64748B' }}
+            title="Cerrar ventana"
+            aria-label="Cerrar ventana"
           >
             <X size={18} />
           </button>

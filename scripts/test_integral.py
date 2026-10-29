@@ -28,7 +28,7 @@ def main():
         output = result.stdout + result.stderr
         print(output, end='')
         result.check_returncode()
-        count = re.search(r'Ran (\d+) tests', output)
+        count = re.search(r'Ran (\d+) tests?', output)
         if not count:
             raise RuntimeError('No se encontró el resumen de pruebas.')
         dest = ROOT / 'test-results'

@@ -23,7 +23,7 @@ from cafae.importaciones import ImportacionService
 from cafae.planillas import PlanillaService
 from cafae.reportes import ReporteService
 from cafae.trabajadores import TrabajadorService
-from cafae.security import AccessError, UserError
+from cafae.security import AccessError, NoEncontrado, UserError
 
 if not os.environ.get('CAFAE_DB_NAME', '').startswith('cafae_test_'):
     raise SystemExit('Estas pruebas requieren una base cafae_test_* aislada.')
@@ -65,6 +65,7 @@ class TestFlujoIntegral(unittest.TestCase):
         n_id = CAT.create_nivel(self.admin_token, f'Secundaria {uuid.uuid4().hex[:4]}')
         m_id = CAT.create_meta(self.admin_token, f'M{uuid.uuid4().hex[:3]}', 'Educación Secundaria')
         CAT.set_nivel_meta(self.admin_token, n_id, m_id)
+        cat_id = CAT.create_categoria(self.admin_token, 'A1', 'Profesional')
 
         inst_id = CAT.create_institucion(
             self.admin_token, '0098765', 'I.E. San José de Chepén', n_id, 'Chepén'
@@ -81,12 +82,14 @@ class TestFlujoIntegral(unittest.TestCase):
         dni_2 = '00445566'
         t1 = TRAB.create_trabajador(token_operador, {
             'dni': dni_1, 'apellidos': 'Vargas Llosa', 'nombres': 'Mario',
-            'tipo': 'IIEE', 'institucion_id': inst_id, 'importe': Decimal('1350.00'),
+            'tipo': 'IIEE', 'institucion_id': inst_id, 'nivel_id': n_id,
+            'categoria_id': cat_id, 'importe': Decimal('1350.00'),
             'cuenta_multired': '00123456789'
         })
         t2 = TRAB.create_trabajador(token_operador, {
             'dni': dni_2, 'apellidos': 'Arguedas Altamirano', 'nombres': 'José María',
-            'tipo': 'SEDE', 'area_id': area_id, 'importe': Decimal('1800.00'),
+            'tipo': 'SEDE', 'area_id': area_id, 'nivel_id': n_id,
+            'categoria_id': cat_id, 'importe': Decimal('1800.00'),
             'cuenta_multired': '00987654321'
         })
 
@@ -100,7 +103,17 @@ class TestFlujoIntegral(unittest.TestCase):
         detalles = PLAN.get_detalle_version(token_operador, v1_id)
         row_t1 = detalles[0]['id']
 
-        PLAN.guardar_edicion_lote(token_operador, v1_id, revision_esperada=1, cambios=[{
+        # Cada inserción de hijos (detalle, descuentos, firmas) ejecuta
+        # bloquear_edicion() y sube revision_edicion. El contrato de creación
+        # ya devuelve la revisión vigente: el cliente no debe asumir 1.
+        revision_actual = pln_iiee['revision_edicion']
+        self.assertGreater(revision_actual, 1)
+        self.assertEqual(
+            revision_actual,
+            PLAN.get_planilla_version(token_operador, p_id)['revision_edicion'],
+        )
+
+        PLAN.guardar_edicion_lote(token_operador, v1_id, revision_esperada=revision_actual, cambios=[{
             'detalle_id': row_t1,
             'importe': Decimal('1350.00'),
             'dias_licencia': 3,  # Licencia 3 días: 1350/30*3 = 135.00
@@ -162,9 +175,39 @@ class TestFlujoIntegral(unittest.TestCase):
         self.assertEqual(rep_resumen['total_importe'], Decimal('1350.00'))
         self.assertEqual(rep_resumen['total_neto'], Decimal('965.00'))
 
-        # 10. Consultar auditoría administrativa
-        eventos = AUD.list_eventos(self.admin_token)
-        self.assertGreater(len(eventos), 0)
+        # 10. Consultar auditoría administrativa (listado paginado)
+        pagina = AUD.list_eventos(self.admin_token)
+        self.assertEqual(
+            set(pagina), {'items', 'total', 'limite', 'desplazamiento'}
+        )
+        self.assertGreater(pagina['total'], 0)
+        self.assertEqual(len(pagina['items']), min(pagina['limite'], pagina['total']))
+
+        primera = AUD.list_eventos(self.admin_token, limite=1)
+        segunda = AUD.list_eventos(self.admin_token, limite=1, desplazamiento=1)
+        self.assertEqual(len(primera['items']), 1)
+        self.assertEqual(primera['total'], pagina['total'])
+        self.assertNotEqual(primera['items'][0]['id'], segunda['items'][0]['id'])
+
+        # 11. Las rutas delegan la lectura consolidada en el servicio (D-04)
+        from cafae.api.routes_planillas import get_version_detalle
+
+        detalle = get_version_detalle(v1_id, {'token': self.admin_token})
+        self.assertEqual(set(detalle), {'version', 'firmas', 'lineas'})
+        self.assertEqual(detalle['version']['id'], v1_id)
+        self.assertEqual(detalle['version']['estado'], 'CERRADA')
+        self.assertEqual(len(detalle['lineas']), len(filas_cerradas))
+        self.assertTrue(detalle['firmas'])
+
+        with self.assertRaises(NoEncontrado):
+            get_version_detalle(99999999, {'token': self.admin_token})
+
+        # La boleta individual resuelve línea y versión en la misma transacción
+        from cafae.api.routes_documentos import descargar_boleta_individual
+
+        boleta_http = descargar_boleta_individual(filas_cerradas[0]['id'], {'token': self.admin_token})
+        self.assertEqual(boleta_http.status_code, 200)
+        self.assertEqual(boleta_http.media_type, 'application/pdf')
 
 
 if __name__ == '__main__':

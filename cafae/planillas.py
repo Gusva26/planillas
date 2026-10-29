@@ -11,11 +11,11 @@ Cubre:
 - Consulta de historial de versiones y detalle de personal.
 """
 from decimal import Decimal
-from psycopg.errors import SerializationFailure, UniqueViolation
+from psycopg.errors import CheckViolation, SerializationFailure, UniqueViolation
 
 from cafae.auth import AuthService
 from cafae.calculos import CONCEPTOS_DESCUENTO, a_decimal, calcular_liquidacion_trabajador
-from cafae.security import AccessError, UserError
+from cafae.security import AccessError, NoEncontrado, UserError
 
 VERSION_CALCULO = 'decimal-half-up-v1'
 
@@ -234,18 +234,27 @@ class PlanillaService:
                     ).fetchone()
                     detalle_id = d_row['id']
 
-                    # Insertar los 7 conceptos en 0.00
+                    # Insertar los conceptos según el ámbito de la planilla
                     conn.execute(
                         '''INSERT INTO planilla_descuentos(detalle_id, tipo_descuento_id, monto, actualizado_por)
-                           SELECT %s, id, 0.00, %s FROM tipos_descuento''',
-                        (detalle_id, user['id'])
+                           SELECT %s, id, 0.00, %s 
+                           FROM tipos_descuento
+                           WHERE activo = true AND (CASE WHEN %s = 'IIEE' THEN aplica_iiee ELSE aplica_sede END)''',
+                        (detalle_id, user['id'], tipo)
                     )
                     orden += 1
 
+                revision = conn.execute(
+                    'SELECT revision_edicion FROM planilla_versiones WHERE id = %s',
+                    (version_id,)
+                ).fetchone()['revision_edicion']
                 return {
                     'planilla_id': planilla_id,
                     'version_id': version_id,
-                    'trabajadores_copiados': len(trabajadores)
+                    'trabajadores_copiados': len(trabajadores),
+                    # Las inserciones de detalle subieron la revisión: el
+                    # cliente no debe asumir 1 ni volver a leerla.
+                    'revision_edicion': revision,
                 }
         except UniqueViolation:
             raise UserError(f'Ya existe una planilla de {tipo} registrada para el periodo {anio}-{mes:02d}.')
@@ -375,17 +384,79 @@ class PlanillaService:
                     (nuevo_detalle_id, user['id'], d['id'])
                 )
 
+            revision = conn.execute(
+                'SELECT revision_edicion FROM planilla_versiones WHERE id = %s',
+                (version_id,)
+            ).fetchone()['revision_edicion']
             return {
                 'planilla_id': planilla_id,
                 'version_id': version_id,
-                'trabajadores_copiados': len(detalles_fuente)
+                'trabajadores_copiados': len(detalles_fuente),
+                'revision_edicion': revision,
             }
 
     # =========================================================================
     # C. CONSULTA DE DETALLE Y FILAS CON DESCUENTOS
     # =========================================================================
-    def get_detalle_version(self, token, version_id, institucion_id=None, area_id=None, query=None):
+    # D-04: la cabecera, sus firmas y sus líneas se leen en la misma transacción.
+    # Armarlas con lecturas separadas permitía responder con la cabecera de una
+    # revisión y las líneas de otra si alguien cerraba o editaba la planilla en
+    # el medio; en documentos eso produce un PDF con firmas que no corresponden.
+
+    def _leer_version(self, conn, version_id):
+        """Cabecera de la versión con el tipo, el periodo y quién la creó/cerró."""
+        return conn.execute(
+            '''SELECT pv.*, p.tipo, p.cantidad_firmas, per.anio, per.mes,
+                      u_crea.nombre_completo AS creada_por_nombre,
+                      u_cerr.nombre_completo AS cerrada_por_nombre
+               FROM planilla_versiones pv
+               JOIN planillas p ON p.id = pv.planilla_id
+               JOIN periodos per ON per.id = p.periodo_id
+               JOIN usuarios u_crea ON u_crea.id = pv.creada_por
+               LEFT JOIN usuarios u_cerr ON u_cerr.id = pv.cerrada_por
+               WHERE pv.id = %s''',
+            (version_id,)
+        ).fetchone()
+
+    def _leer_firmas_version(self, conn, version_id):
+        """Firmas registradas al cerrar la versión (vacío si sigue abierta)."""
+        return conn.execute(
+            'SELECT * FROM planilla_firmas WHERE version_id = %s ORDER BY posicion ASC',
+            (version_id,)
+        ).fetchall()
+
+    def get_version_completa(self, token, version_id, *, permiso='consultar',
+                             institucion_id=None, area_id=None, query=None):
+        """Cabecera, firmas y líneas de una versión en una sola transacción."""
         version_id = int(version_id)
+        with self.auth.data_transaction(token, permiso) as (conn, _):
+            version = self._leer_version(conn, version_id)
+            if not version:
+                raise NoEncontrado('Versión de planilla no encontrada.')
+            firmas = self._leer_firmas_version(conn, version_id)
+            lineas = self._leer_detalle(conn, version_id, institucion_id, area_id, query)
+        return {'version': version, 'firmas': firmas, 'lineas': lineas}
+
+    def get_linea_con_version(self, token, linea_id, *, permiso='consultar'):
+        """Versión y línea de detalle en una sola transacción."""
+        linea_id = int(linea_id)
+        with self.auth.data_transaction(token, permiso) as (conn, _):
+            referencia = conn.execute(
+                'SELECT version_id FROM planilla_detalle WHERE id = %s', (linea_id,)
+            ).fetchone()
+            if not referencia:
+                raise NoEncontrado('Línea de trabajador no encontrada.')
+            version = self._leer_version(conn, referencia['version_id'])
+            if not version:
+                raise NoEncontrado('Versión de planilla no encontrada.')
+            lineas = self._leer_detalle(conn, referencia['version_id'])
+        fila = next((f for f in lineas if f['id'] == linea_id), None)
+        if not fila:
+            raise NoEncontrado('Trabajador no encontrado en la versión.')
+        return version, fila
+
+    def _leer_detalle(self, conn, version_id, institucion_id=None, area_id=None, query=None):
+        """Filas de detalle enriquecidas; requiere una conexión ya abierta."""
         sql = '''SELECT pd.id, pd.version_id, pd.trabajador_id, pd.orden, pd.dni, pd.apellidos, pd.nombres,
                         pd.institucion_id, pd.institucion_nombre, pd.codigo_modular, pd.distrito,
                         pd.area_id, pd.area_nombre, pd.nivel_id, pd.nivel_nombre,
@@ -434,8 +505,36 @@ class PlanillaService:
             params.extend([clean_q, clean_q, clean_q])
 
         sql += ' ORDER BY pd.orden ASC'
+        rows = conn.execute(sql, params).fetchall()
+        if not rows:
+            return []
+
+        det_ids = [r['id'] for r in rows]
+        descs = conn.execute(
+            '''SELECT pd.detalle_id, td.id AS tipo_id, td.codigo, td.nombre, pd.monto
+               FROM planilla_descuentos pd
+               JOIN tipos_descuento td ON td.id = pd.tipo_descuento_id
+               WHERE pd.detalle_id = ANY(%s)''',
+            (det_ids,)
+        ).fetchall()
+
+        map_descs = {}
+        for d in descs:
+            map_descs.setdefault(d['detalle_id'], {})[d['codigo']] = d['monto']
+
+        for r in rows:
+            row_descs = map_descs.get(r['id'], {})
+            r['descuentos'] = row_descs
+            for cod, monto in row_descs.items():
+                r[cod] = monto
+                r[cod.lower()] = monto
+
+        return rows
+
+    def get_detalle_version(self, token, version_id, institucion_id=None, area_id=None, query=None):
+        version_id = int(version_id)
         with self.auth.data_transaction(token, 'consultar') as (conn, _):
-            return conn.execute(sql, params).fetchall()
+            return self._leer_detalle(conn, version_id, institucion_id, area_id, query)
 
     list_lineas_edicion = get_detalle_version
 
@@ -476,19 +575,37 @@ class PlanillaService:
                         (dias_lic, detalle_id, version_id)
                     )
 
-                # Actualizar los 7 descuentos
+                # Actualizar los descuentos (dinámico según tipos de descuento configurados)
                 descs_dict = c.get('descuentos', {}) if isinstance(c.get('descuentos'), dict) else {}
                 for cod, t_id in tipos.items():
-                    raw_desc = c.get(cod) if cod in c else descs_dict.get(cod)
+                    raw_desc = None
+                    if cod in c:
+                        raw_desc = c[cod]
+                    elif cod.lower() in c:
+                        raw_desc = c[cod.lower()]
+                    elif cod in descs_dict:
+                        raw_desc = descs_dict[cod]
+                    elif cod.lower() in descs_dict:
+                        raw_desc = descs_dict[cod.lower()]
+                    elif cod == 'CAJA_SULLANA' and 'sullana' in c:
+                        raw_desc = c['sullana']
+                    elif cod == 'SUB_CAFAE' and 'subcafae' in c:
+                        raw_desc = c['subcafae']
+                    elif cod == 'SITASE_FENTASE' and 'fentase' in c:
+                        raw_desc = c['fentase']
+                    elif cod == 'OTROS' and 'otros' in c:
+                        raw_desc = c['otros']
+
                     if raw_desc is not None:
                         monto = a_decimal(raw_desc, f'Descuento {cod}')
                         if monto < Decimal('0.00'):
                             raise UserError(f'El descuento {cod} no puede ser negativo.')
                         conn.execute(
-                            '''UPDATE planilla_descuentos
-                               SET monto = %s, actualizado_por = %s
-                               WHERE detalle_id = %s AND tipo_descuento_id = %s''',
-                            (monto, user['id'], detalle_id, t_id)
+                            '''INSERT INTO planilla_descuentos (detalle_id, tipo_descuento_id, monto, actualizado_por)
+                               VALUES (%s, %s, %s, %s)
+                               ON CONFLICT (detalle_id, tipo_descuento_id) DO UPDATE
+                               SET monto = EXCLUDED.monto, actualizado_por = EXCLUDED.actualizado_por''',
+                            (detalle_id, t_id, monto, user['id'])
                         )
 
             # Obtener nueva revisión
@@ -503,29 +620,81 @@ class PlanillaService:
         revision_esperada = int(revision_esperada)
 
         with self.auth.data_transaction(token, 'editar_planillas') as (conn, user):
-            conn.execute('SELECT bloquear_edicion(%s, %s)', (version_id, revision_esperada))
+            try:
+                conn.execute('SELECT bloquear_edicion(%s, %s)', (version_id, revision_esperada))
+            except SerializationFailure:
+                raise UserError('La planilla fue modificada por otro usuario o proceso. Actualice la página antes de limpiar.')
+            except CheckViolation:
+                raise UserError('La versión de la planilla está cerrada y no puede ser modificada.')
 
-            if concepto_codigo:
-                tipo = conn.execute('SELECT id FROM tipos_descuento WHERE codigo = %s', (concepto_codigo,)).fetchone()
-                if tipo:
+            # Normalizar código de concepto
+            codigo_norm = None
+            if concepto_codigo and str(concepto_codigo).strip():
+                c_clean = str(concepto_codigo).strip().upper()
+                if c_clean in ('SULLANA', 'CAJA_SULLANA'):
+                    codigo_norm = 'CAJA_SULLANA'
+                elif c_clean in ('SUBCAFAE', 'SUB_CAFAE'):
+                    codigo_norm = 'SUB_CAFAE'
+                elif c_clean in ('FENTASE', 'SITASE', 'SITASE_FENTASE'):
+                    codigo_norm = 'SITASE_FENTASE'
+                elif c_clean == 'LICENCIA':
+                    codigo_norm = 'LICENCIA'
+                else:
+                    codigo_norm = c_clean
+
+            # Obtener detalles para actualizar fila por fila y evitar conflicto de triggers concurrentes
+            detalles = conn.execute(
+                'SELECT id, dias_licencia FROM planilla_detalle WHERE version_id = %s ORDER BY id',
+                (version_id,)
+            ).fetchall()
+
+            if codigo_norm == 'LICENCIA':
+                for d in detalles:
+                    if d['dias_licencia'] > 0:
+                        conn.execute(
+                            'UPDATE planilla_detalle SET dias_licencia = 0 WHERE id = %s',
+                            (d['id'],)
+                        )
+            elif codigo_norm:
+                tipo = conn.execute('SELECT id FROM tipos_descuento WHERE codigo = %s', (codigo_norm,)).fetchone()
+                if not tipo:
+                    raise UserError(f'Concepto de descuento no válido: {concepto_codigo}')
+                t_id = tipo['id']
+                descs = conn.execute(
+                    '''SELECT detalle_id FROM planilla_descuentos 
+                       WHERE tipo_descuento_id = %s 
+                         AND monto > 0 
+                         AND detalle_id IN (SELECT id FROM planilla_detalle WHERE version_id = %s)''',
+                    (t_id, version_id)
+                ).fetchall()
+                for r in descs:
                     conn.execute(
-                        '''UPDATE planilla_descuentos SET monto = 0.00, actualizado_por = %s
-                           WHERE tipo_descuento_id = %s
-                             AND detalle_id IN (SELECT id FROM planilla_detalle WHERE version_id = %s)''',
-                        (user['id'], tipo['id'], version_id)
+                        '''UPDATE planilla_descuentos 
+                           SET monto = 0.00, actualizado_por = %s
+                           WHERE detalle_id = %s AND tipo_descuento_id = %s''',
+                        (user['id'], r['detalle_id'], t_id)
                     )
             else:
-                # Días de licencia a cero
-                conn.execute(
-                    'UPDATE planilla_detalle SET dias_licencia = 0 WHERE version_id = %s',
+                # Todos los descuentos y licencias
+                for d in detalles:
+                    if d['dias_licencia'] > 0:
+                        conn.execute(
+                            'UPDATE planilla_detalle SET dias_licencia = 0 WHERE id = %s',
+                            (d['id'],)
+                        )
+                descs = conn.execute(
+                    '''SELECT detalle_id, tipo_descuento_id FROM planilla_descuentos 
+                       WHERE monto > 0 
+                         AND detalle_id IN (SELECT id FROM planilla_detalle WHERE version_id = %s)''',
                     (version_id,)
-                )
-                # 7 descuentos a cero
-                conn.execute(
-                    '''UPDATE planilla_descuentos SET monto = 0.00, actualizado_por = %s
-                       WHERE detalle_id IN (SELECT id FROM planilla_detalle WHERE version_id = %s)''',
-                    (user['id'], version_id)
-                )
+                ).fetchall()
+                for r in descs:
+                    conn.execute(
+                        '''UPDATE planilla_descuentos 
+                           SET monto = 0.00, actualizado_por = %s
+                           WHERE detalle_id = %s AND tipo_descuento_id = %s''',
+                        (user['id'], r['detalle_id'], r['tipo_descuento_id'])
+                    )
 
             nueva_rev = conn.execute(
                 'SELECT revision_edicion FROM planilla_versiones WHERE id = %s', (version_id,)

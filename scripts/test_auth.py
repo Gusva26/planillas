@@ -21,7 +21,6 @@ def main():
             '-e', 'CAFAE_DB_NAME=' + db,
             '-v', str(ROOT / 'tests' / 'auth') + ':/tests:ro',
             '-v', str(ROOT / 'cafae') + ':/app/cafae:ro',
-            '-v', str(ROOT / 'app.py') + ':/app/app.py:ro',
             'app', 'python', '/tests/test_auth.py'], cwd=ROOT, capture_output=True, text=True, encoding='utf-8')
         output = result.stdout + result.stderr
         print(output, end='')
@@ -33,7 +32,7 @@ def main():
         dest.mkdir(exist_ok=True)
         (dest / 'auth.json').write_text(json.dumps({'ok': True, 'tests': int(count.group(1)), 'bootstrap_concurrent': 1,
             'completed_at': datetime.now(timezone.utc).isoformat(),
-            'scope': 'Autenticación, roles, concurrencia y UI contra PostgreSQL aislado'}, indent=2), encoding='utf-8')
+            'scope': 'Autenticación, roles y concurrencia contra PostgreSQL aislado'}, indent=2), encoding='utf-8')
     finally:
         run('docker', 'exec', CONTAINER, 'dropdb', '-U', 'cafae_migrator', db)
 

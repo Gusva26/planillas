@@ -1,17 +1,279 @@
-# Arquitectura propuesta
+# Arquitectura
 
-**Actualización 24/09/2026:** la capa PostgreSQL ya está implementada mediante seis migraciones y verificada con pruebas reales. El resto de esta arquitectura describe los módulos por desarrollar. El [informe de implementación](09-base-datos-implementada.md) distingue las protecciones existentes de los servicios e interfaz pendientes.
+**Estado: implementado · revisión 28/10/2026.** La primera sección describe el
+sistema real; la segunda conserva el diseño objetivo original del 24/09/2026.
+Las diferencias y el porqué están en el [registro de ADR](adr/README.md).
+
+> Regla de lectura: **§Estado implementado es la fuente de verdad**. §Diseño
+> objetivo original explica la intención y las piezas que aún no existen (OCR,
+> storage privado, pytest).
+
+## Estado implementado (28/10/2026)
+
+### C4 nivel 1 — Contexto
+
+```mermaid
+flowchart LR
+    U["Usuario administrativo<br/>ADMINISTRADOR · PLANILLAS · CONSULTA"]
+    S["Sistema de Planillas CAFAE<br/>UGEL Chepén"]
+    B["Banco de la Nación<br/>destino manual del TXT"]
+
+    U -->|"HTTPS en red local"| S
+    S -.->|"archivo TXT descargado"| B
+```
+
+### C4 nivel 2 — Contenedores
+
+```mermaid
+flowchart TB
+    subgraph HOST["Docker Compose · cafae-local"]
+        APP["cafae-app-dev<br/>FastAPI + Uvicorn :8501<br/>API /api + SPA estática"]
+        DB[("cafae-postgres-dev<br/>PostgreSQL 17<br/>host :55432")]
+    end
+    SPA["Navegador<br/>React 19 + Vite (dist/)"] -->|"fetch /api"| APP
+    OPS["Operación<br/>migrate.py · bootstrap · runners de test"] -->|"docker exec / compose run"| APP
+    OPS --> DB
+    APP -->|"psycopg · SET LOCAL ROLE"| DB
+```
+
+### C4 nivel 3 — Componentes del backend
+
+```mermaid
+flowchart LR
+    subgraph API["cafae/api"]
+        R["9 routers<br/>routes_*.py"]
+        D["deps.py<br/>get_current_user · require_role"]
+    end
+    subgraph DOM["Dominio · cafae/*.py"]
+        AU["AuthService"]
+        PL["PlanillaService"]
+        TR["TrabajadorService"]
+        CA["CatalogoService"]
+        IM["ImportacionService"]
+        RE["ReporteService"]
+        AD["AuditoriaService"]
+        DOC["documentos/*<br/>PDF · Excel · boletas · TXT"]
+    end
+    DB[("PostgreSQL<br/>35 tablas · 3 roles SQL")]
+
+    R --> D
+    R --> PL
+    R --> TR
+    R --> CA
+    R --> IM
+    R --> RE
+    R --> AD
+    R --> DOC
+    D --> AU
+    AU -->|"cafae.db.transaction"| DB
+    PL --> DB
+    TR --> DB
+    CA --> DB
+    IM --> DB
+    RE --> DB
+    AD --> DB
+    DOC -.->|"recibe datos resueltos, no consulta"| PL
+```
+
+### Regla de dependencia
+
+| Capa | Puede importar | No puede |
+| --- | --- | --- |
+| `frontend/src` | `/api` por HTTP | reglas de negocio, SQL |
+| `cafae/api/routes_*` | `deps`, servicios, Pydantic | `cafae.db`, `psycopg` |
+| `cafae/api/deps.py` | `AuthService`, `security` | servicios de dominio |
+| `cafae/*.py` (servicios) | `cafae.db`, `security`, `calculos`, `documentos` | FastAPI |
+| `cafae/documentos/*` | `calculos`, tipos | `cafae.db` |
+
+**Estado**: ningún router ejecuta SQL ni abre transacciones. Los borrados de
+catálogos, la lectura de versiones y los documentos pasan por sus servicios, y
+una guardia AST (`tests/api/test_contrato.py`) falla si el SQL reaparece en la
+capa HTTP.
+
+### Inventario
+
+| Elemento | Cantidad | Detalle |
+| --- | --- | --- |
+| Endpoints | 99 | catálogos 62 · documentos 8 · planillas 7 · trabajadores 5 · auth 4 · users 4 · importaciones 4 · auditoría 2 · reportes 2 · health 1 |
+| Tablas | 35 | esquema `cafae` |
+| Migraciones | 8 | `001`–`008`, inmutables por SHA-256 |
+| Pruebas | 114 | `unittest`, 8 runners, base desechable `cafae_test_*` |
+| UIs | 1 | React + Vite (ADR-005); Streamlit retirado el 28/10 |
+| Logging estructurado | 1 | JSON por línea con `X-Request-ID`; los 3 `print` restantes son la CLI de `cafae/bootstrap.py` |
+
+### Desviaciones frente al diseño original
+
+| Diseño 24/09/2026 | Implementado | Registro |
+| --- | --- | --- |
+| SQLAlchemy + repositorios | `psycopg` + SQL en servicios | ADR-001 |
+| Alembic | `scripts/migrate.py` con hash y advisory lock | ADR-002 |
+| pytest | `unittest` + runners Docker | pendiente de ADR |
+| `app/{domain,application,infrastructure}` | `cafae/` plano por dominio | ADR-001 |
+| Importadores PDF/DOCX/OCR | solo Excel | fuera de alcance |
+| Storage privado de archivos | documentos generados en memoria | por definir |
+| Una sola UI | React + Streamlit → solo React | ADR-005 (ejecutado 28/10) |
+
+### Deuda priorizada
+
+| ID | Severidad | Hallazgo | Evidencia | Fase |
+| --- | --- | --- | --- | --- |
+| D-01 | Resuelto (era Crítico) | El TXT exige `txt_bancario`, está bloqueado por D.5 y solo se emite desde versión cerrada | `routes_documentos.py:20-42,168-208`; `tests/seguridad/` | 28/10 |
+| D-02 | Resuelto (era Crítico) | Un solo esquema de credenciales: `Authorization: Bearer`; sin query string ni cabeceras alternativas | `api/deps.py`; `frontend/src/api/client.ts` | 28/10 |
+| D-03 | Resuelto (era Alto) | Ningún router ejecuta SQL ni abre transacciones. Los 13 `DELETE ... RETURNING` de catálogos viven ahora en `CatalogoService._borrar_catalogo`, que traduce ausencia (`NoEncontrado` → 404) y uso (`Conflicto` → 409). Una guardia AST cubre los tres routers | `cafae/catalogos.py`; `tests/api/test_contrato.py` | 28/10 |
+| D-04 | Resuelto (era Alto) | Cabecera, firmas y líneas de una versión salen de una sola transacción: `get_version_completa` y `get_linea_con_version`. Antes se armaban con dos y tres lecturas y podían mezclar revisiones. Los documentos usan la copia de firmas de la versión (`planilla_firmas`), no el catálogo vivo | `cafae/planillas.py`; `routes_planillas.py`; `routes_documentos.py` | 28/10 |
+| D-05 | Resuelto | Los ocho endpoints de documentos exigen `generar_documentos`; `txt_bancario` además exige versión cerrada y D.5 habilitado. `CONSULTA` solo lee | `routes_documentos.py:21-22,69-211`; `tests/seguridad/test_documentos.py` | 28/10 |
+| D-06 | Resuelto (era Parcial) | Sobre de error uniforme (RFC 9457) con `code` estable, `403`/`401` para `AccessError`/`SessionError`, `409` para conflictos de revisión y `422` para validación. Ningún router captura `UserError`: los siete delegan en el handler global y una guardia AST lo verifica | `api/errors.py`; `api/main.py`; `tests/api/test_contrato.py` | 28/10 |
+| D-07 | Resuelto (era Alto) | Los 62 endpoints de catálogos viven en un paquete por grupo (`bundle`, `institucional`, `presupuesto`, `personal`, `firmas`, `configuracion` + `_base` con modelos y servicio); el módulo más grande baja a 295 líneas y una prueba fija las 62 operaciones en OpenAPI | `cafae/api/routes_catalogos/` | 28/10 |
+| D-08 | Resuelto (era Medio) | Log JSON por línea (`cafae/logging_conf.py`) con `request_id` propagado por `ContextVar`; middleware que acepta o genera `X-Request-ID`, lo devuelve en la respuesta y mide la duración. Uvicorn arranca con `--no-access-log` para no duplicar | `cafae/logging_conf.py`; `api/main.py`; `Dockerfile` | 28/10 |
+| D-09 | Resuelto (era Medio) | CORS sin comodín: solo los orígenes de desarrollo (`CAFAE_CORS_ORIGINS` los reemplaza) y `allow_credentials=False`, porque la sesión viaja en `Authorization` y no en cookies | `api/main.py`; `tests/api/test_contrato.py` | 28/10 |
+| D-10 | Resuelto (era Medio) | Contrato tipado en el cliente: `apiRequest<T>` sin `any`, `ApiError` sobre RFC 9457, `Pagina[T]` estándar y `usePaginacion`. Queda un `any` documentado en `ReportesView` porque los 9 reportes no tienen esquema propio | `frontend/src/api/`; `frontend/src/hooks/usePaginacion.ts` | 2 |
+| D-11 | Resuelto (era Medio) | Medido: abrir conexión cuesta ~9,4 ms y la consulta ~0,2 ms. Sin errores hasta 64 hilos concurrentes, pero el techo de peticiones se estanca en ~340 ops/s. Se cierra **sin pool**: la carga real (una transacción por petición, uso humano) está dos órdenes de magnitud por debajo. Queda un disparador documentado para reabrirlo | `scripts/medir_concurrencia.py`; `cafae/db.py:17-23` | 3 |
+| D-12 | Bajo | Este documento describía un sistema distinto al implementado | `docs/02-arquitectura.md` | 1 (resuelto) |
+
+**Hotfix 28/10/2026.** D-01, D-02 y D-05 quedaron cerrados:
+`GET /api/documentos/banco-txt/{id}` y `banco-txt-resumen` exigen permiso
+`txt_bancario` (ADMINISTRADOR/PLANILLAS), responden `403` mientras D.5 siga
+vigente (`CAFAE_TXT_BANCARIO=1` es la única habilitación) y exigen versión
+`CERRADA`. El resto de documentos (PDF, Excel, remuneraciones, boletas y
+cuadernillo) exigen `generar_documentos`, y `CONSULTA` conserva solo lectura.
+Pruebas: `python scripts/test_seguridad.py` (15 casos).
+
+**Contrato de API 28/10/2026.** Todo error sale como `application/problem+json`
+con `type`, `title`, `status`, `code`, `detail` e `instance`
+([`docs/11-contrato-api.md`](11-contrato-api.md)); el conflicto de revisión
+detectado en la base responde `409 CONFLICTO_REVISION` en vez de `500`, y
+`POST /api/planillas` devuelve la `revision_edicion` vigente. Los listados que
+crecen sin techo usan el sobre `Pagina[T]` (`GET /api/auditoria`) y el cliente
+ramifica por `code`. Ningún router de dominio captura `UserError`: se quitaron
+55 mapeos locales (48 en catálogos, 5 en trabajadores, 2 en reportes) y una
+guardia AST falla si reaparecen. Pruebas: `python scripts/test_api.py` (28
+casos, sin base de datos).
+
+**Lectura consistente de versiones 28/10/2026.** `GET /api/planillas/versiones/{id}`
+y los ocho endpoints de documentos armaban la respuesta con dos y tres
+transacciones distintas: cabecera, firmas y líneas podían venir de revisiones
+diferentes si alguien editaba o cerraba la planilla en el medio. Ahora
+`PlanillaService.get_version_completa` y `get_linea_con_version` leen todo en
+una sola transacción, y los dos routers dejaron de contener SQL. Los servicios
+pueden señalar un recurso ausente con `NoEncontrado`, que el API traduce a
+`404 NO_ENCONTRADO`.
+
+**Borrado de catálogos en el servicio 28/10/2026.** Los once `DELETE` de
+catálogos ejecutaban SQL y capturaban `ForeignKeyViolation` dentro del router.
+Ahora `CatalogoService` expone `delete_nivel`, `delete_institucion`,
+`delete_area_sede`, `delete_meta`, `delete_firma`, `delete_programa`,
+`delete_partida`, `delete_cargo`, `delete_categoria`, `delete_situacion` y
+`delete_subtipo`, todos sobre un `_borrar_catalogo` que distingue los dos
+desenlaces posibles: `NoEncontrado` si el registro no existe y `Conflicto` si
+sigue en uso. El API traduce el segundo a `409 CONFLICTO_ESTADO`, así que un
+catálogo con dependencias ya no comparte código con un rechazo de validación.
+`routes_catalogos.py` bajó de 992 a 879 líneas y quedó libre de psycopg; la
+guardia `SinSqlEnRouters` ahora también lo cubre. Pruebas: 106 en total, con
+cuatro casos nuevos de borrado contra PostgreSQL.
+
+**Catálogos partidos por grupo 28/10/2026.** Ese mismo archivo se convirtió en
+el paquete `cafae/api/routes_catalogos/`: `_base.py` reúne los modelos de
+entrada y la instancia del servicio, y los endpoints se agrupan en `bundle`,
+`institucional`, `presupuesto`, `personal`, `firmas` y `configuracion`. El
+prefijo `/catalogos` se aplica una sola vez en `__init__.py`, que también
+reexporta las rutas históricas. El módulo más grande es `institucional.py` con
+295 líneas. No cambió ningún path ni método: 62 operaciones antes y después, y
+una prueba las fija contra el esquema OpenAPI para que una mudanza futura no
+pierda endpoints en silencio. La guardia de SQL ahora recorre todos los
+archivos del paquete, no solo su `__init__`. Pruebas: 107.
+
+**Observabilidad y CORS 28/10/2026.** `cafae/logging_conf.py` instala un
+formateador JSON en la raíz y guarda el identificador de la petición en un
+`ContextVar`, así los servicios lo heredan sin recibirlo como parámetro. El
+middleware `correlacion` acepta el `X-Request-ID` que envíe el cliente o genera
+uno, lo devuelve en toda respuesta y registra una línea con método, ruta,
+estado y duración; los fallos no controlados se registran con su traceback y
+salen como `500`, no como `400`. Uvicorn arranca con `--no-access-log` para no
+duplicar el registro. En la misma pasada, CORS dejó de ser `*` con
+credenciales: solo los orígenes de desarrollo, configurables con
+`CAFAE_CORS_ORIGINS`, y `allow_credentials=False` porque la sesión viaja en
+`Authorization`. El `except Exception` del `/bundle` desapareció, y el proxy de
+Vite apunta al puerto real (8501). Pruebas: 114.
+
+**Medición de concurrencia 28/10/2026 (D-11).** `scripts/medir_concurrencia.py`
+levantó una base desechable, migró, creó un administrador y midió tres rutas a
+1, 4, 8, 16, 32 y 64 hilos: `SELECT 1` abriendo conexión por operación,
+`SELECT 1` sobre una conexión ya abierta (control) y
+`CatalogoService.list_niveles` como lectura real. El servidor tiene
+`max_connections = 100`.
+
+| ruta | p50 a 1 hilo | p50 a 64 hilos | techo observado |
+| --- | --- | --- | --- |
+| `SELECT 1` con conexión nueva | 9,6 ms | 177 ms | ~340 ops/s |
+| `SELECT 1` reutilizando conexión | 0,2 ms | 14,7 ms | ~1 600-2 200 ops/s |
+| `list_niveles` | 15,4 ms | 257 ms | ~220 ops/s |
+
+Abrir conexión cuesta ~9,4 ms; la consulta trivial, ~0,2 ms. Con `list_niveles`,
+que hace trabajo real, la conexión sigue siendo cerca del 60 % de la latencia
+en reposo. La latencia crece de forma lineal con los hilos en las tres rutas
+—se satura, no se degrada— y no hubo **ni un error** hasta 64 hilos: los 100
+slots no son el límite a esa concurrencia.
+
+**Decisión: no se agrega pool todavía.** El sistema abre una transacción por
+petición (no hay bucles de una transacción por fila: los 51 usos de
+`transaction()` en `catalogos.py` y los 14 de `reportes.py` son uno por método)
+y su carga es humana: dos órdenes de magnitud por debajo de los ~340 ops/s
+medidos. El costo real es ~9 ms fijos por petición, imperceptibles en la UI, a
+cambio de una dependencia nueva (`psycopg_pool`), un ciclo de vida de
+*startup/shutdown* y pruebas de fuga. **Se reabre si** aparece un endpoint que
+necesite más de ~300 ops/s o un p95 por encima de 100 ms atribuible a la
+conexión, o si el despliegue pasa a más de un worker de uvicorn: cada worker
+usa hasta 40 hilos y varios workers podrían superar los 100 slots del servidor.
+
+**Retiro de Streamlit 28/10/2026.** Se ejecutó el plan de ADR-005: se
+eliminaron `app.py`, `cafae/ui/` y `.streamlit/`, la dependencia `streamlit`
+salió de `requirements.txt` y `requirements.lock`, el `Dockerfile` dejó de
+copiar `app.py` y el healthcheck de `compose.yaml` apunta a `/api/health`.
+Los cuatro casos de UI basados en `AppTest` se retiraron de
+`tests/auth/test_auth.py`; la suite completa pasa sin `streamlit` instalado.
+
+**Firmas de la versión y sobre del 500 28/10/2026.** Dos huecos que la revisión
+del PR encontró. Los documentos armaban el bloque de firmas con
+`CatalogoService.list_firmas` recortado a `cantidad_firmas`: una planilla ya
+cerrada cambiaba de firmantes si alguien editaba el catálogo después, y un
+catálogo con menos firmas activas producía un PDF incompleto sin avisar. Ahora
+`_get_contexto_version` usa la copia que la versión guardó en `planilla_firmas`
+al crearse y al cerrarse, así que D-04 cubre también las firmas y no solo la
+cabecera y las líneas. Por otro lado, un fallo no clasificado salía como
+`text/plain` de Starlette: sin `code`, sin `instance` y sin `X-Request-ID`, justo
+donde el contrato promete que el identificador sirve para rastrear el incidente.
+Se registró un handler de `Exception` que responde `500 ERROR_INTERNO` sin
+filtrar `str(exc)`, y el middleware deja el identificador en `request.state`
+porque el handler corre fuera de él. Por último, el Excel oficial dibujaba
+siempre cuatro bloques de firma, así que una planilla de Sede salía con un
+cuarto espacio vacío bajo el cargo "Especialista en Finanzas": ahora Sede
+distribuye tres bloques sobre el ancho de la hoja y conserva los cuatro en
+II.EE. Pruebas: 121.
+
+### Riesgos abiertos
+
+- **Capacidad medida, no ilimitada**: sin pool, el techo está en ~340 ops/s y
+  ~9 ms fijos por petición; alcanza para el uso actual, pero un despliegue con
+  varios workers de uvicorn podría agotar los 100 slots del servidor. Ver D-11.
+- **Token en `localStorage`**: un XSS escala a robo de sesión completa.
+- **TXT bancario**: el formato ya está implementado y probado, pero D.5 lo
+  mantiene bloqueado hasta la especificación oficial.
+- **Dos fuentes de reglas**: triggers en la base y validaciones en servicios
+  pueden divergir; la mitigación son las pruebas de integridad existentes.
+
+## Diseño objetivo original (24/09/2026)
 
 Las [decisiones confirmadas](08-decisiones-confirmadas.md) fijan un solo ingreso, el importe de Sede desde REMUN. TOTAL y ocho descuentos en ambos formatos. Se retiran los conceptos adicionales de los nuevos documentos. Las firmas son cuatro en II.EE. y tres en Sede, con personas y cargos configurables; Gestión Administrativa corresponde al formato de II.EE.
 
 ## Capas y dependencias
 
-Monolito modular: un despliegue inicial sencillo, con módulos separados y una única base de datos. Streamlit presenta formularios y tablas; no concentra reglas de negocio ni SQL en `app.py`.
+Monolito modular: un despliegue inicial sencillo, con módulos separados y una única base de datos. La interfaz React presenta formularios y tablas consumiendo la API REST (FastAPI); no concentra reglas de negocio ni SQL.
 
 ```mermaid
 flowchart LR
-    U[Usuario administrativo] --> UI[Streamlit: vistas y componentes]
-    UI --> A[Servicios: sesión, permisos y transacciones]
+    U[Usuario administrativo] --> UI[Frontend React: vistas y componentes]
+    UI --> API[API REST FastAPI]
+    API --> A[Servicios: sesión, permisos y transacciones]
     A --> D[Dominio: cálculos y validaciones]
     A --> R[Repositorios SQLAlchemy]
     R --> PG[(PostgreSQL)]
@@ -23,13 +285,13 @@ flowchart LR
     A --> AU[Auditoría y logs]
 ```
 
-La interfaz llama a servicios con identidad autenticada. Los servicios verifican permisos, validan entradas, bloquean la versión y ejecutan repositorios en una unidad de trabajo. El dominio usa objetos y `Decimal`, sin dependencia de Streamlit ni Pandas. Los generadores reciben un contrato de datos histórico y no consultan el maestro.
+La interfaz llama a servicios con identidad autenticada. Los servicios verifican permisos, validan entradas, bloquean la versión y ejecutan repositorios en una unidad de trabajo. El dominio usa objetos y `Decimal`, sin dependencia de la UI ni Pandas. Los generadores reciben un contrato de datos histórico y no consultan el maestro.
 
 ## Componentes
 
 | Componente | Responsabilidad |
 |---|---|
-| Python / Streamlit | Interfaz en español, navegación, sesión de presentación, formularios y edición por lote |
+| React + Vite / FastAPI | Interfaz en español, navegación, sesión de presentación, formularios y edición por lote |
 | SQLAlchemy / psycopg | Acceso parametrizado a PostgreSQL; repositorios y transacciones |
 | Alembic | Migraciones revisables y versionadas, separadas del arranque de la aplicación |
 | PostgreSQL | Relaciones, unicidad, importes exactos, historial, auditoría e índices |
@@ -50,10 +312,10 @@ Este árbol describe los módulos futuros; no indica que estén implementados.
 
 ```text
 proyecto_planillas/
-  app.py                          # composición y navegación; sin reglas de negocio
+  frontend/                       # Aplicación React + Vite
+  cafae/                          # Backend modular y API FastAPI
   pyproject.toml
   .env.example                    # nombres de variables, nunca credenciales reales
-  .streamlit/config.toml
   app/
     config.py
     bootstrap.py
@@ -223,7 +485,7 @@ No confundir `st.login()` con validación de contraseñas locales: el mecanismo 
 
 Defensas previstas: límite de intentos por cuenta/origen con respuestas genéricas, TLS en proxy, protección XSRF/CORS activa, secretos por entorno, consultas parametrizadas, archivos privados fuera de rutas públicas y mínimos privilegios. Las descargas también verifican rol y alcance; no usar enlaces públicos permanentes. Cachear solo datos seguros o con clave de identidad/permiso/versión; nunca compartir un DataFrame sensible entre sesiones sin control.
 
-La matriz de roles vive en el servicio de autorización. La interfaz oculta acciones no permitidas por claridad, pero una llamada directa debe rechazarse igualmente. CONSULTA descarga PDF, Excel y boletas autorizados; TXT requiere permiso explícito de generación y descarga reservado inicialmente a ADMINISTRADOR y PLANILLAS.
+La matriz de roles vive en el servicio de autorización. La interfaz oculta acciones no permitidas por claridad, pero una llamada directa debe rechazarse igualmente. `CONSULTA` conserva solo lectura; la emisión de PDF, Excel, boletas y remuneraciones exige `generar_documentos`, y el TXT exige además `txt_bancario` y versión cerrada (ADR-006, aceptado el 28/10/2026).
 
 ## Operación y recuperación
 
@@ -240,6 +502,5 @@ La generación larga/OCR tendrá límite de recursos y estado persistente; comen
 - Exactitud monetaria: [PostgreSQL, tipos numéricos](https://www.postgresql.org/docs/current/datatype-numeric.html).
 - Restricciones por fila y relaciones: [PostgreSQL, constraints](https://www.postgresql.org/docs/18/ddl-constraints.html).
 - Exclusión de escritores concurrentes: [PostgreSQL, bloqueos explícitos](https://www.postgresql.org/docs/current/explicit-locking.html).
-- Sesión de interfaz: [Streamlit, Session State](https://docs.streamlit.io/develop/api-reference/caching-and-state/st.session_state).
-- Distinción autenticación/autorización y OIDC: [Streamlit, autenticación](https://docs.streamlit.io/develop/concepts/connections/authentication).
+- API y especificación: [FastAPI Documentation](https://fastapi.tiangolo.com/).
 - Hash de contraseñas: [OWASP, almacenamiento de contraseñas](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html).

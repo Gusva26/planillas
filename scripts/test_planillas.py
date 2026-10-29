@@ -22,13 +22,14 @@ def main():
             '-e', 'CAFAE_DB_NAME=' + db,
             '-v', str(ROOT / 'tests' / 'planillas') + ':/tests:ro',
             '-v', str(ROOT / 'cafae') + ':/app/cafae:ro',
-            'app', 'python', '/tests/test_planillas.py'
+            # Descubre test_planillas.py y test_banco_txt.py en el mismo run.
+            'app', 'python', '-m', 'unittest', 'discover', '-s', '/tests', '-t', '/tests'
         ], cwd=ROOT, capture_output=True, text=True, encoding='utf-8')
 
         output = result.stdout + result.stderr
         print(output, end='')
         result.check_returncode()
-        count = re.search(r'Ran (\d+) tests', output)
+        count = re.search(r'Ran (\d+) tests?', output)
         if not count:
             raise RuntimeError('No se encontró el resumen de pruebas.')
         dest = ROOT / 'test-results'
@@ -37,7 +38,8 @@ def main():
             'ok': True,
             'tests': int(count.group(1)),
             'completed_at': datetime.now(timezone.utc).isoformat(),
-            'scope': 'Cálculos Decimal ROUND_HALF_UP, creación maestro/copia, edición por lote, cierre y reapertura'
+            'scope': 'Cálculos Decimal ROUND_HALF_UP, creación maestro/copia, edición por lote, '
+                     'cierre y reapertura, formato TXT bancario'
         }, indent=2), encoding='utf-8')
     finally:
         run('docker', 'exec', CONTAINER, 'dropdb', '-U', 'cafae_migrator', db)

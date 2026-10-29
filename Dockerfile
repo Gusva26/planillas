@@ -1,8 +1,10 @@
 # Stage 1: Compilación de Frontend Moderno (React + Vite)
 FROM node:22-slim AS frontend-builder
 WORKDIR /build
-COPY frontend/package.json ./
-RUN npm install
+# El lock está versionado: `npm ci` instala exactamente ese árbol y falla si
+# `package.json` y `package-lock.json` se desincronizan.
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
 COPY frontend/ ./
 RUN npm run build
 
@@ -13,12 +15,13 @@ WORKDIR /app
 COPY requirements.lock .
 RUN pip install --no-cache-dir -r requirements.lock && useradd --create-home cafae
 COPY cafae ./cafae
-COPY app.py .
 COPY assets ./assets
 # Frontend compilado listo para servir
 COPY --from=frontend-builder /build/dist ./static
 USER cafae
 EXPOSE 8501
-CMD ["uvicorn", "cafae.api.main:app", "--host", "0.0.0.0", "--port", "8501"]
+# El log de acceso lo emite el middleware de correlación en JSON; el de uvicorn
+# en texto duplicaría cada línea.
+CMD ["uvicorn", "cafae.api.main:app", "--host", "0.0.0.0", "--port", "8501", "--no-access-log"]
 
 

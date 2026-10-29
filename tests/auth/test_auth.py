@@ -9,7 +9,6 @@ import uuid
 
 sys.path.insert(0, '/app')
 from psycopg.errors import CheckViolation, InsufficientPrivilege
-from streamlit.testing.v1 import AppTest
 
 from cafae.auth import AuthService, LOGIN_ERROR
 from cafae.db import transaction
@@ -22,14 +21,6 @@ if not os.environ.get('CAFAE_DB_NAME', '').startswith('cafae_test_'):
 SERVICE = AuthService()
 PASSWORD = secrets.token_urlsafe(24)
 ADMIN_ID = None
-
-
-def field(app, label):
-    return next(item for item in app.text_input if item.label == label)
-
-
-def button(app, label):
-    return next(item for item in app.button if item.label == label)
 
 
 class Authentication(unittest.TestCase):
@@ -272,75 +263,6 @@ class Authentication(unittest.TestCase):
             self.admin = SERVICE.login('admin_pruebas', PASSWORD, self.origin)
             row = self.row(second_id)
             SERVICE.update_user(self.admin, second_id, row['revision'], row['nombre_completo'], 'ADMINISTRADOR', False)
-
-    def test_ui_creacion_y_restauracion_de_acceso(self):
-        app = AppTest.from_file('/app/app.py', default_timeout=15)
-        app.session_state['token'] = self.admin
-        app.run()
-        app.sidebar.radio[0].set_value('Usuarios').run()
-        username, temporary = 'ui_' + uuid.uuid4().hex[:12], secrets.token_urlsafe(24)
-        field(app, 'Nuevo usuario').set_value(username)
-        field(app, 'Nombre completo').set_value('Persona de prueba UI')
-        field(app, 'Contraseña temporal').set_value(temporary)
-        field(app, 'Repite la contraseña temporal').set_value(temporary)
-        button(app, 'Crear usuario').click().run()
-        self.assertFalse(app.error)
-        user = next(u for u in SERVICE.list_users(self.admin) if u['usuario'] == username)
-        token = SERVICE.login(username, temporary, self.origin)
-        self.assertTrue(SERVICE.current_user(token)['debe_cambiar_password'])
-        select = next(s for s in app.selectbox if s.label == 'Cuenta para restablecer')
-        select.set_value(user['id']).run()
-        replacement = secrets.token_urlsafe(24)
-        field(app, 'Nueva contraseña temporal').set_value(replacement)
-        field(app, 'Repite la nueva contraseña temporal').set_value(replacement)
-        next(c for c in app.checkbox if c.label == 'Confirmo el restablecimiento y cierre de sus sesiones').check()
-        button(app, 'Restablecer acceso').click().run()
-        self.assertFalse(app.error)
-        with self.assertRaises(SessionError):
-            SERVICE.current_user(token)
-        self.assertTrue(SERVICE.login(username, replacement, self.origin))
-
-    def test_ui_login_invalido_y_valido_logout(self):
-        app = AppTest.from_file('/app/app.py', default_timeout=15).run()
-        self.assertEqual(len(app.exception), 0)
-        self.assertFalse(app.sidebar.radio)
-        field(app, 'Usuario').set_value('admin_pruebas')
-        field(app, 'Contraseña').set_value(secrets.token_urlsafe(24))
-        button(app, 'Iniciar sesión').click().run()
-        self.assertTrue(app.error)
-        field(app, 'Usuario').set_value('admin_pruebas')
-        field(app, 'Contraseña').set_value(PASSWORD)
-        button(app, 'Iniciar sesión').click().run()
-        self.assertEqual(len(app.exception), 0)
-        self.assertIn('Usuarios', app.sidebar.radio[0].options)
-        app.sidebar.radio[0].set_value('Usuarios').run()
-        self.assertFalse(app.error)
-        self.assertEqual(len(app.dataframe), 1)
-        button(app, 'Cerrar sesión').click().run()
-        self.assertFalse(app.sidebar.radio)
-        self.assertTrue(field(app, 'Usuario'))
-
-    def test_ui_consulta_sin_usuarios(self):
-        _, _, _, token = self.new_user()
-        app = AppTest.from_file('/app/app.py', default_timeout=15)
-        app.session_state['token'] = token
-        app.run()
-        self.assertFalse(app.error)
-        self.assertNotIn('Usuarios', app.sidebar.radio[0].options)
-
-    def test_ui_cambio_obligatorio(self):
-        _, _, password, token = self.new_user(changed=False)
-        app = AppTest.from_file('/app/app.py', default_timeout=15)
-        app.session_state['token'] = token
-        app.run()
-        self.assertTrue(field(app, 'Contraseña actual'))
-        new = secrets.token_urlsafe(24)
-        field(app, 'Contraseña actual').set_value(password)
-        field(app, 'Nueva contraseña').set_value(new)
-        field(app, 'Repite la nueva contraseña').set_value(new)
-        button(app, 'Guardar nueva contraseña').click().run()
-        self.assertFalse(app.error)
-        self.assertTrue(field(app, 'Usuario'))
 
 
 if __name__ == '__main__':
